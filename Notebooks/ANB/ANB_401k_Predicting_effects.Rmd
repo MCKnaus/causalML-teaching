@@ -1,0 +1,473 @@
+---
+title: "Causal ML: Predicting effects"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+<br>
+
+These are the goals of today:
+
+- Hand-code S-learner, T-learner, Causal Forest (at least a little bit), R-learner and DR-learner
+
+<br>
+
+# 401(k) dataset again
+
+We again use the data of the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (*p401*) on net assets (*net_tfa*). Since then, the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the few controls ensure that the programs run not as long as with datasets that you hope to have for your applications.
+
+```{r, warning=F,message=F}
+library(hdm)
+library(grf)
+library(tidyverse)
+library(psych)
+library(estimatr)
+# library(devtools)
+# install_github("susanathey/causalTree")
+library(causalTree)
+# library(devtools)
+# install_github(repo="MCKnaus/causalDML")
+library(causalDML)
+
+set.seed(1234) # for replicability
+
+# Get data
+data(pension)
+# Outcome
+Y = pension$net_tfa
+# Treatment
+W = pension$p401
+# Treatment
+Z = pension$e401
+# Create main effects matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+We want to predict effects of 401(k) participation on net assets using the following estimators:
+
+- S-learner (to be defined)
+
+- T-learner
+
+- Causal Tree
+
+- Causal Forest
+
+- R-learner
+
+- DR-learner
+
+
+<br>
+<br>
+
+# S-learner
+
+We did not discuss it in class, but another straightforward way of getting CATEs is to model $E[Y|W,X]$ and then evaluate it at $E[Y|1,X] - E[Y|0,X]$
+
+
+```{r}
+WX = cbind(W,X)
+rf = regression_forest(WX,Y)
+W0X = cbind(rep(0,length(Y)),X)
+W1X = cbind(rep(1,length(Y)),X)
+cate_sl = predict(rf,W1X)$predictions - predict(rf,W0X)$predictions
+hist(cate_sl)
+```
+
+<br>
+<br>
+
+
+# T-learner
+
+For the T-learner, we implement the following procedure:
+
+1. Use ML estimator of your choice to fit model $\hat{m}(1,X)$ in treated}
+
+2. Use ML estimator of your choice to fit model $\hat{m}(0,X)$ in controls
+
+3. Estimate CATE as $\hat{\tau}(x) = \hat{m}(1,x) - \hat{m}(0,x)$
+
+
+```{r}
+rfm1 = regression_forest(X[W==1,],Y[W==1])
+rfm0 = regression_forest(X[W==0,],Y[W==0])
+cate_tl = predict(rfm1, X)$predictions - predict(rfm0, X)$predictions
+hist(cate_tl)
+```
+
+<br>
+<br>
+
+# Causal Tree
+
+Let's move on with the Causal Tree, which is implemented in the package and function `causalTree`. The package is build for experiments, so we do not control for confounding here. However, if the data were experimental, this is what you would do to implement the method:
+
+```{r, results='hide'}
+# Prepare data frame
+df = data.frame(X,Y)
+# Implemented causalTree adapting specification from R example
+ctree = causalTree(Y~X, data = df, treatment = W,
+                   split.Rule = "CT", cv.option = "CT", split.Honest = T,split.Bucket = F, xval = 5, 
+                   cp = 0, minsize = 20)
+opcp = ctree$cptable[,1][which.min(ctree$cptable[,4])]
+opfit = prune(ctree, opcp)
+rpart.plot(opfit)
+```
+
+We see in the parent node that the “treatment effect” of $27k is much larger then what we get by controlling for confounding where the effects ranged from $11k to $15k. We also do not know whether the splits are driven by effect heterogeneity or heterogeneous selection bias.
+
+However, if we ignore confounding for the sake of the argument, the tree shows substantial heterogeneity regarding age and some other variables.
+
+Given the obvious selection bias, we do not form predictions for causal trees.
+
+<br>
+<br>
+
+# Causal Forest
+
+## `grf` package
+
+Causal Forests are implemented most conveniently with the `causal_forest` function of the `grf` package. If we use the `predict` function for the created object, we get out-of-bag estimated IATEs for every individual in our sample:
+
+
+```{r}
+cf = causal_forest(X, Y, W)
+cate_cf = predict(cf)$predictions
+hist(cate_cf)
+```
+
+## Replicated using weighted ROR regression
+
+Now let's see what the Causal Forest does in the background. To this end, we want to "manually" replicate the predicted effect of individual one. It has a predicted effect of `r cate_cf[1]` and has the following characteristics:
+```{r}
+X[1,]
+```
+
+Recall that causal forest estimates CATEs using this formula:
+$$
+\begin{equation}
+	\hat{\tau}^{cf}(x) = argmin_{\tau} \left\{ \sum_{i=1}^N \alpha_i(x) \left[(Y_i - \hat{m}(X_i))  - \tau(x)(W_i - \hat{e}(X_i)) \right]^2 \right\},
+\end{equation}
+$$
+where $\alpha(x)$ are $x$-specific weights.
+
+We can implement this ourselves this because the causal forest saves all components that were used in the process.
+
+1. We extract the nuisance parameters estimates:
+
+```{r}
+mhat = cf$Y.hat
+ehat = cf$W.hat
+```
+
+2. We extract the weights used for individual one using `get_forest_weights`:
+
+```{r}
+alphax = get_forest_weights(cf)[1,]
+hist(as.numeric(alphax))
+```
+
+3. We create the residuals and run a weighted residual-on-residual regression (RORR) w/o constant:
+
+```{r}
+Yres = Y - mhat
+Wres = W - ehat
+manual_cate = lm(Yres ~ 0 + Wres,weights = as.numeric(alphax))$coefficients
+manual_cate
+```
+
+Let's check whether this is equal to the `causal_forest` prediction:
+
+```{r}
+all.equal(as.numeric(cate_cf[1]),as.numeric(manual_cate))
+```
+
+Nope :-(
+
+What did we miss?
+
+The `causal_forest` runs the weighted RORR with constant. This constant should asymptotically be zero, but in finite samples it is not:
+
+```{r}
+Yres = Y - mhat
+Wres = W - ehat
+manual_cate_const = lm(Yres ~ Wres,weights = as.numeric(alphax))
+summary(manual_cate_const)
+```
+
+With constant the results from the package and our "manually" coded version coincide:
+```{r}
+all.equal(as.numeric(cate_cf[1]),as.numeric(manual_cate_const$coefficients[2]))
+```
+
+After all, it boiled down to run OLS...
+
+<br>
+<br>
+
+
+# R-learner
+
+## Hand-coded using modified covariates (OLS)
+
+To illustrate how we can implement the R-leaner like this for assuming a linear CATE model
+$$
+\begin{equation}
+\hat{\beta}^{rl} = argmin_{\beta} \sum_{i=1}^N \big(Y_i - \hat{m}(X_i) -  X_i^* \beta \big)^2
+\end{equation}
+$$
+we recycle the nuisance parameters of above and just need to define the modified/pseudo-covariates $X^* = X(W - \hat{e}(X))$ 
+
+
+```{r}
+# Create residuals
+res_y = Y-mhat
+res_w = W-ehat
+
+# Modify covariates (multiply each column including constant with residual)
+n = length(Y)
+X_wc = cbind(rep(1,n),X)
+Xstar = X_wc * res_w
+# Regress outcome residual on modified covariates
+rl_ols = lm(res_y ~ 0 + Xstar)
+summary(rl_ols)
+```
+
+Now we need to take the coefficients of this model to get fitted values of the CATEs as $X \beta$ (!fitted values need to be calculated using $X$, not $X^*$, do not repeat a mistake I did in the beginning !)
+
+```{r}
+cate_rl_ols = X_wc %*% rl_ols$coefficients
+hist(cate_rl_ols)
+```
+
+<br>
+
+## Hand-coded using pseudo-outcomes and weights (OLS)
+
+The more generic alternative is to use the unmodified covariates in a weighted regression with pseudo outcomes:
+$$\hat{\tau}^{rl}(x)  = argmin_{\tau} \sum_{i=1}^N \underbrace{(W_i - \hat{e}(X_i))^2}_{\text{weight}} \left(\underbrace{\frac{Y_i - \hat{m}(X_i)}{W_i - \hat{e}(X_i)}}_{\text{pseudo-outcome}} -  X_i\beta \right)^2$$
+
+For the sake of the argument run it again with OLS
+
+```{r}
+# Create pseudo-outcome (outcome res divided by treatment res)
+pseudo_rl = res_y / res_w
+
+# Create weights
+weights_rl = res_w^2
+
+# Weighted regression of pseudo-outcome on covariates
+rols_fit = lm(pseudo_rl ~ X, weights=weights_rl)
+summary(rols_fit)
+```
+
+and observe that both implementations deliver identical results:
+
+```{r}
+all.equal(as.numeric(rl_ols$coefficients),as.numeric(rols_fit$coefficients))
+```
+This was just for illustration that both representations provide identical results when solved with a method without random components. In practice, we can apply anything that solves the (weighted) minimization problem.
+
+
+<br>
+
+## Hand-coded using pseudo-outcomes and weights (Random Forest)
+
+Going beyond pure illustration, we implement the R-learner now using random forest:
+
+
+```{r}
+# Weighted regression with RF
+rrf_fit = regression_forest(X,pseudo_rl, sample.weights = weights_rl)
+cate_rl_rf = predict(rrf_fit)$predictions
+hist(cate_rl_rf)
+```
+
+<br>
+<br>
+
+# DR-learner
+
+Finally, run the DR-learner that creates the pseudo-outcome in a first step
+$$
+   \begin{align}
+         \tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}} \nonumber
+    \end{align}
+$$
+
+and uses it in a final regression step.
+
+```{r}
+mwhat0 = mwhat1 = rep(NA,length(Y))
+rfm0 = regression_forest(X[W==0,],Y[W==0])
+mwhat0[W==0] = predict(rfm0)$predictions
+mwhat0[W==1] = predict(rfm0,X[W==1,])$predictions
+
+rfm1 = regression_forest(X[W==1,],Y[W==1])
+mwhat1 = predict(rfm1)$predictions
+mwhat1[W==1] = predict(rfm1)$predictions
+mwhat1[W==0] = predict(rfm1,X[W==0,])$predictions
+
+Y_tilde = mwhat1 - mwhat0 + W * (Y - mwhat1) / ehat - (1 - W) * (Y - mwhat0) / (1-ehat)
+
+cate_dr = predict(regression_forest(X,Y_tilde))$predictions
+hist(cate_dr)
+```
+
+Plot the results against each other to see that they are correlated, but far from finding the same predictions.
+
+```{r}
+# Store and plot predictions
+results = cbind(cate_sl,cate_tl,cate_cf,cate_rl_rf,cate_dr)
+colnames(results) = c("S-learner","T-learner","Causal Forest","R-learner","DR-learner")
+pairs.panels(results,method = "pearson")
+describe(results)
+```
+
+## DIY extensions:
+
+- Implement the R-learner with Lasso and different dictionaries or any other method that solves a weighted least squares problem.
+
+- Implement the DR-learner with the `dr_learner()`.
+
+
+<br>
+<br>
+
+# Effect heterogeneity and its validation/inspection
+
+To illustrate how the ideas for validating experiments generalize to the unconfoundedness setting, create a 50:50 sample split:
+
+```{r}
+# Determine the number of rows in X
+n_rows <- nrow(X)
+
+# Generate a random vector of indices
+indices <- sample(1:n_rows, size = 0.5*n_rows)
+
+# Split the data
+X_train <- X[indices,]
+X_test <- X[-indices,]
+W_train <- W[indices]
+W_test <- W[-indices]
+Y_train <- Y[indices]
+Y_test <- Y[-indices]
+```
+
+Run causal forest in the training sample:
+```{r}
+CF = causal_forest(X_train,Y_train,W_train,tune.parameters = "all")
+cates = predict(CF,X_test)$predictions
+hist(cates)
+```
+
+*Disclaimer:* Note that the following validation of heterogeneous effect estimates with observational data results from my current reading of the Generic ML paper but has not yet been rigorously assessed in a scientific study.
+
+<br>
+
+## Best linear predictor (BLP)
+
+Get the pseudo-outcome in the test sample:
+
+```{r}
+aipw_test = DML_aipw(Y_test,W_test,X_test)
+pseudoY = aipw_test$ATE$delta
+```
+
+and run the BLP as described in the slides:
+
+```{r}
+demeaned_cates = cates - mean(cates)
+lm_blp = lm_robust(pseudoY ~ demeaned_cates)
+summary(lm_blp)
+```
+
+This particular training and test split seems to detect systematic effect heterogeneity.
+
+<br>
+
+## Sorted Group Average Treatment Effects (GATES)
+
+Additionally, we run a GATES analysis as described in the slides with `K=5`.
+
+First create the slices, then regression of the group indicators on pseudo outcome:
+
+```{r}
+K = 5
+slices = factor(as.numeric(cut(cates, breaks=quantile(cates, probs=seq(0,1, length = K+1)),include.lowest=TRUE)))
+G_ind = model.matrix(~0+slices)
+GATES_woc = lm_robust(pseudoY ~ 0 + G_ind)
+# Print results
+summary(GATES_woc)
+
+# Plot results
+se = GATES_woc$std.error
+data.frame(Variable = paste("Group",1:K),
+           Coefficient = GATES_woc$coefficients,
+           cil = GATES_woc$coefficients - 1.96*se,
+           ciu = GATES_woc$coefficients + 1.96*se) %>% 
+  ggplot(aes(x=Variable,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(linewidth=2.5) +
+  geom_errorbar(width=0.15) + geom_hline(yintercept=0) + geom_hline(yintercept = lm_blp$coefficients[1], linetype = "dashed")
+```
+
+We see a clear monotonic relationship that adds to the BLP evidence that the causal forest detected systematic heterogeneity.
+
+Finally, we test $H_0:\gamma_5 - \gamma_1 = 0$ by adding the constant to the GATES regression such that Group 1 becomes the reference group:
+
+```{r}
+GATES_wc = lm_robust(pseudoY ~ G_ind[,-1])
+summary(GATES_wc)
+```
+
+Given the clear pattern in the graph it is not surprising that we can reject the null suggesting once more that causal forest finds systematic heterogeneity.
+
+<br>
+
+## Classification analysis (CLAN)
+
+After finding evidence that the heterogeneity is systematic, we want to understand which covariates are most predictive of the effect sizes. This is done by comparing covariate means across the sorted groups:
+
+```{r}
+for (i in 1:ncol(X_test)) {
+  print(colnames(X_test)[i])
+  print(summary(lm_robust(X_test[,i] ~ slices)))
+}
+
+```` 
+
+The most and the least affected groups differ substantially along most dimensions (besides male and family size). A general pattern emerges indicating that older and higher income persons have higher effects.
+
+<br>
+
+

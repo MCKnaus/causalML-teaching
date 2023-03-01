@@ -1,0 +1,250 @@
+---
+title: "Causal ML: Double Selection and Partially Linear Double ML"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+<br>
+
+Goals:
+
+- Illustrate why naive implementations of model selection using Lasso are problematic
+
+<br>
+
+# Introducing the data
+
+The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the relatively few covariates ensure that the programs do not run too long.
+
+```{r, warning = F, message = F}
+# To install the causalDML package uncomment the following two lines
+# library(devtools)
+# install_github(repo="MCKnaus/causalDML")
+
+# Load the packages required for later
+library(hdm)
+library(tidyverse)
+library(causalDML)
+library(grf)
+library(estimatr)
+
+set.seed(1234) # for replicability
+
+data(pension)
+# Outcome
+Y = pension$net_tfa
+# Treatment
+W = pension$p401
+# Create main effects matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+<br>
+<br>
+
+# Hand-coded Double Selection
+
+To understand the procedure of Double Selection, we proceed step by step using only the main effects for simplicity:
+
+1. Select variables in the outcome regression without the treatment:
+
+```{r}
+# Select variables in outcome regression
+sel_y = rlasso(X,Y)
+# Which variables are selected?
+which(sel_y$beta != 0)
+```
+
+<br>
+
+2. Select variables in the treatment regression:
+
+```{r}
+# Select variables in treatment regression
+sel_w = rlasso(X,W)
+which(sel_w$beta != 0)
+```
+Note that variable *db* is now selected which was not selected in step one. 
+
+<br>
+
+3. Use the union of the in total seven selected variables to run a standard OLS regression with robust standard errors:
+
+```{r}
+# Double selection
+X_sel_union = X[,sel_y$beta != 0 | sel_w$beta != 0]
+ds_hand = lm_robust(Y ~ W + X_sel_union)
+summary(ds_hand)
+```
+
+
+<br>
+<br>
+
+# Double Selection with `hdm` package
+
+In practice we want to have one function that does everything at once. This is the `rlassoEffect` command of the `hdm` package.
+
+```{r}
+ds1 = rlassoEffect(X,Y,W)
+summary(ds1)
+```
+
+It produces the same point estimate as the hand-coded version:
+
+```{r}
+all.equal(as.numeric(ds1$alpha),as.numeric(ds_hand$coefficients[2]))
+```
+
+Only the standard error differs slightly because of different defaults. If you do not like this, applying `se_type = "HC1` in the `lm_robust()` function replicates the standard error of `rlassoEffect()`.
+
+<br>
+
+## More flexible dictionaries
+
+We can check whether more flexible covariate matrices provide different results:
+
+- `X2` with 88 variables: Second order polynomials of the continuous variables age, education and income as well as second order interactions of all variables
+
+- `X3` with 567 variables: Third order polynomials of the continuous variables age, education and income as well as third order interactions of all variables
+
+
+```{r}
+X2 = model.matrix(~ 0 + (fsize + marr + twoearn + db + pira + hown + male +
+                           poly(age,2) + poly(educ,2) + poly(inc,2))^2, data = pension)
+X3 = model.matrix(~ 0 + (fsize + marr + twoearn + db + pira + hown + male +
+                           poly(age,3) + poly(educ,3) + poly(inc,3))^3, data = pension)
+```
+
+Indeed, the effects are by more than $2000 Dollars higher, but going from two to three order terms makes basically no difference:
+
+```{r}
+ds2 = rlassoEffect(X2,Y,W)
+summary(ds2)
+ds3 = rlassoEffect(X3,Y,W)
+summary(ds3)
+```
+
+<br>
+<br>
+
+
+# Hand-coded Double ML for partially linear model
+
+If we are not willing to assume a linear model and use for example random forest to estimate the nuisance parameters of a partially linear model, we need to predict the nuisance parameters out-of-sample. The easiest way to do this is via two-fold cross-fitting:
+
+- Split the sample in two random subsamples, S1 and S2
+
+- Form prediction models in S1, use it to predict in S2
+
+- Form prediction models in S2, use it to predict in S1
+
+- Run residual-on-residual regression with the combined predictions
+
+
+```{r}
+# Initialize nuisance vectors
+n = length(Y)
+mhat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = X[index_s1,]
+w1 = W[index_s1]
+y1 = Y[index_s1]
+# Create sample 2 with those not in S1
+x2 = X[-index_s1,]
+w2 = W[-index_s1]
+y2 = Y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1)
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1,y1)
+mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2)
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2,y2)
+mhat[index_s1] = predict(rf,newdata=x1)$predictions
+# RORR
+res_y = Y-mhat
+res_w = W-ehat
+pl_2f = lm_robust(res_y ~ 0+res_w)
+summary(pl_2f)
+```
+
+<br>
+<br>
+
+
+# Double ML for partially linear model with `causalDML` package
+
+2-fold cross-fitting is easy to implement by hand but especially in small sample sizes, using only 50% of the data to estimate the nuisance parameters might lead to unstable predictions.
+
+Thus, we use the `DML_partial_linear` function of the `causalDML` package to run 5-fold cross-fitting. This package requires to create the methods that we use because it allows for ensemble methods (for a more detailed intro see the [GitHub page](https://github.com/MCKnaus/causalDML)). For now, we focus again on the random forest.
+
+With 5-fold cross-fitting, the program splits the sample in 5 folds and uses 4 folds (80% of the data) to predict the left out fold (20% of the data). It iterates such that every fold is left out once.
+
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# Run partially linear model
+pl_5f = DML_partial_linear(Y,W,X,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(pl_5f)
+```
+
+<br>
+<br>
+
+
+# Comparison of results
+
+We can now compare all the different methods. Besides Double Selection with only the main effects all methods agree on an effect of 401(k) participation of wealth of about $14k:
+
+```{r}
+# Collect the results
+Coefficient = c(ds1$alpha,ds2$alpha,ds3$alpha,pl_2f$coefficients,pl_5f$result[1])
+se = c(ds1$se,ds2$se,ds3$se,pl_2f$std.error,pl_5f$result[2])
+data.frame(Coefficient,se,
+                Method = c("DS1","DS2","DS3","PL 2-fold","PL 5-fold"),
+                cil = Coefficient - 1.96*se,
+                ciu = Coefficient + 1.96*se)  %>% 
+  ggplot(aes(x=Method,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(size=2.5) + geom_errorbar(width=0.15)  +
+  geom_hline(yintercept=0)
+```
+
+
+<br>
+<br>
+
+ 

@@ -1,0 +1,208 @@
+---
+title: "Supervised ML: Tree-based methods"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "01/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+Goal:
+
+- See regression trees and random forests in action
+
+<br>
+
+# Introducing the data
+
+The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the relatively few covariates ensure that the programs do not run too long.
+
+We consider wealth in $1000 for better representation of the results.
+
+```{r, warning = F, message = F}
+# Load the packages required for later
+library(hdm)
+library(tidyverse)
+library(rpart)
+library(partykit)
+library(grf)
+library(rpart.plot)
+
+set.seed(1234) # for replicability
+
+data(pension)
+Y = pension$net_tfa / 1000
+# Create covariate matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+Note that we only need the main effects in this notebook as tree-based methods are supposed to find relevant interactions themselves.
+
+<br>
+<br>
+
+# Regression tree
+
+Let's build our first tree using the `rpart` package and `rpart.plot` for improved visualization. The tree is pruned using the default cross-validation:
+
+```{r}
+tree = rpart(Y ~ X)
+rpart.plot(tree)
+```
+
+We observe that the cross-validated tree creates five leafs. Most of the individuals have no individual retirement account and are all subsumed into the left leaf where the mean (and thus the predicted wealth) is $5.6k. Those with individual accounts are then further split according to their income.
+
+When plotting the fitted values against the observed ones, we clearly see the discrete nature of a single tree:
+
+
+```{r}
+yhat_tree = predict(tree)
+plot(yhat_tree,Y)
+```
+
+<br>
+<br>
+
+# Random Forest regression
+
+Random Forest take the average over many trees that are build on random subsamples using only random subsets of covaraites to split.
+
+There are many different implementations of Random Forests. Here we use the `regression_forest` function of the `grf` package because this is also crucial in the causal ML part.
+
+The random forest predictions are much smoother and overcomes the discrete nature of a single tree:
+
+
+```{r}
+rf = regression_forest(X,Y,tune.parameters = "all")
+yhat_rf = predict(rf)$predictions
+plot(yhat_rf,Y)
+```
+
+Random Forests provide different ways to calculate variable importance measures. The details go beyond the scope of this notebook.
+
+However, let's have a look at the variable importance measure provided by the `grf` package. It sums up to one and roughly describes which variables are most often used to split in the thousands of trees resulting in the forest:
+
+```{r}
+vi = variable_importance(rf)
+rownames(vi) = colnames(X)
+round(vi,3)
+```
+
+Clearly the most predictive variables are income and the participation in an IRA. The variable importance measure is a descriptive tool to open the black box of a random forest a little bit. Still, we can not do inference on these kind of measures. But we are not really interested in *how* Random Forests do their job in forming good predictions anyways, the important thing is *that* they do their job.
+
+<br>
+<br>
+
+# Compare performance
+
+Like in the Application Notebook for Lasso, we check how different methods perform out-of-sample by splitting the dataset in 100 random training and test sets to check the out-of-sample $R^2$.
+
+We compare three different methods:
+
+- Tree: One single tree
+
+- Random Forest: Standard random forest
+
+- Honest Random Forest: Random Forest where the tree structure is learned on a different subsample then the leaf means
+
+
+```{r}
+# Define training (2/3) and test (1/3) sample split
+test_fraction = 1/3
+test_size = floor(test_fraction * length(Y))
+
+# Here we define some useful function to keep the code clean
+# They run the method in the training sample and calcualte the test set R2
+tree_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
+  df_tr = data.frame(x_tr,y_tr)
+  df_te = data.frame(x_te,y_te)
+  tree = rpart(y_tr ~ ., df_tr)
+  y_hat = predict(tree, newdata = df_te)
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+rf_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
+  rf = regression_forest(x_tr,y_tr,tune.parameters = "all", honesty = FALSE)
+  y_hat = predict(rf, newdata = x_te)$predictions
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+rfh_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
+  rf = regression_forest(x_tr,y_tr,tune.parameters = "all", honesty = TRUE)
+  y_hat = predict(rf, newdata = x_te)$predictions
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+rep = 100 # number of replications
+
+# Container of the results
+results_r2 = matrix(NA,rep,3)
+colnames(results_r2) = c("Tree","Forest","Honest Forest")
+
+# Loop considering different splits
+for (i in 1:rep) {
+  # Draw index for this round
+  temp_ind = sample(1:length(Y), size = test_size)
+
+  # Split into training and test samples
+  X_tr = X[-temp_ind,]
+  X_te = X[temp_ind,]
+  Y_tr = Y[-temp_ind]
+  Y_te = Y[temp_ind]
+  
+  results_r2[i,1] = tree_oos_r2(X_tr,Y_tr,X_te,Y_te)
+  results_r2[i,2] = rf_oos_r2(X_tr,Y_tr,X_te,Y_te)
+  results_r2[i,3] = rfh_oos_r2(X_tr,Y_tr,X_te,Y_te)
+}
+```
+
+
+A look at the mean $R^2$ reveals that - as expeced - the single tree performs much worse than the two random forests that are very similar:
+
+
+```{r}
+round(colMeans(results_r2),3)
+```
+Looking at the boxplot shows that Honest Random Forests seem to be preferable as they are more stable than "dishonest" forests:
+
+
+```{r}
+as.data.frame(results_r2) %>% pivot_longer(cols=everything(),names_to = "Method",values_to = "R2") %>%
+  ggplot(aes(x = R2, y = Method)) + geom_boxplot()
+```
+
+
+However, Lasso-based methods achieved on average up to 29% $R^2$ compared to 26% of the tree-based methods. Thus, it seems that linear model are slightly better suited to predict wealth in this application.
+
+<br>
+<br>
+
+ 

@@ -1,0 +1,188 @@
+---
+title: "Causal ML: Double ML for group average treatment effects"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Estimate subgroup effects
+
+- Estimate best linear predictor of heterogeneity 
+
+- Estimate nonparametric heterogeneity with kernel and spline regression
+
+<br>
+
+# Introducing the data
+
+The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the relatively few covariates ensure that the programs do not run too long.
+
+```{r, warning = F, message = F}
+# To install the causalDML package uncomment the following two lines
+# library(devtools)
+# install_github(repo="MCKnaus/causalDML")
+
+# Load the packages required for later
+library(hdm)
+library(tidyverse)
+library(causalDML)
+library(grf)
+library(estimatr)
+
+
+set.seed(1234) # for replicability
+options(scipen = 10) # Switch off scientific notation
+
+data(pension)
+# Outcome
+Y = pension$net_tfa
+# Treatment
+W = pension$p401
+# Create main effects matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+<br>
+<br>
+
+# Double ML for AIPW with `causalDML` package
+
+Like previous notebooks, we create the pseudo-outcome
+$$\tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}}$$
+
+by running the `DML_aipw` function:
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+aipw = DML_aipw(Y,W,X)
+summary(aipw$ATE)
+
+# If you have more time, tune the forest
+# forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# aipw = DML_aipw(Y,W,X,ml_w=list(forest),ml_y=list(forest),cf=5)
+```
+
+<br>
+<br>
+
+
+# GATE estimation
+
+The pseudo-outcome can now be used to estimate different heterogeneous effects. We use standard regression models but by using the pseudo-outcome instead of a real outcome we model effect size and not outcome level.
+
+## Subgroup effect
+
+First, let's check a classic. Gender differences. This would usually be implemented by splitting the sample by gender and rerunning the whole analysis in the subsamples separately.
+
+With the pseudo-outcome stored in `aipw$ATE$delta` this boils down to running an OLS regression with the `male` indicator as single regressor.
+
+```{r}
+male = X[,7]
+blp_male = lm_robust(aipw$ATE$delta ~ male)
+summary(blp_male)
+```
+
+We can interpret this outcome as we are used to, only that we model now effect size. This means the intercept gives us the average of the reference group (women) and the coefficient tells us how much higher the effect is for men. In this case, we find no significant gender differences in the effect of 401(k) participation on net wealth.
+
+If you are interested in the gender specific effect instead of differences between groups, just run an OLS regression without constant and all group indicators:
+
+```{r}
+female = 1-male
+blp_male1 = lm_robust(aipw$ATE$delta ~ 0 + female + male)
+summary(blp_male1)
+```
+
+You see that we can transfer all the strategies that we know about modeling outcomes with OLS for modelling causal effects.
+
+<br>
+
+## Best linear prediction
+
+Maybe we do not want to focus on subgroup analyses but to model the effect using all main effects at our disposal. In standard OLS this would mean to include a lot of interaction effects while completely relying on correct specification of the outcome model.
+
+Using the pseudo-outcome allows us to be completely agnostic about the outcome model and to receive a nice summary of the underlying effect heterogeneity in a familiar format, an OLS output:
+
+```{r}
+blp = lm_robust(aipw$ATE$delta ~ X)
+summary(blp)
+```
+
+For example, we see that, all other regressors held constant, being one year older increases the effect of 401(k) participation of wealth on average by $ `r round(blp$coefficients[2])`.
+
+Again we realize that everything we learned about OLS for modelling outcomes directly translates to modeling effect sizes.
+
+
+<br>
+
+
+## Non-parametric heterogeneity
+
+The imho coolest thing about having the pseudo-outcome is that we can also estimate heterogeneous effects with nonparametric regressions. This means we are not only agnostic about the outcome and propensity score models but also about the functional of effect heterogeneity. 
+
+This is especially useful if we have some continuous variable like age for which we want to understand effect heterogeneity.
+
+<br>
+
+### Spline regression
+
+The `spline_cate` function implements spline regression reusing the pseudo-outcome:
+
+```{r, results='hide'}
+age = X[,1]
+sr_age = spline_cate(aipw$ATE$delta,age)
+```
+
+```{r}
+plot(sr_age,z_label = "Age")
+```
+
+<br>
+
+### Kernel regression
+
+The `kr_cate` function implements kernel regression reusing the pseudo-outcome:
+
+```{r, results='hide'}
+kr_age = kr_cate(aipw$ATE$delta,age)
+```
+
+```{r}
+plot(kr_age,z_label = "Age")
+```
+
+Both nonparametric approaches document the same pattern. The effect of 401(k) participation on net wealth increases more or less linearly until the age of 50 and then slightly drops.
+
+For me this is an incredible new option for our policy evaluation toolbox.
+
+<br>
+<br>

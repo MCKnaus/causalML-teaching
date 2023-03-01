@@ -1,0 +1,462 @@
+---
+title: "Causal ML: Double ML as generic recipe"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+<br>
+
+Goals:
+
+- Hand-code partially linear (IV) and AIPW for ATE/ATT/LATE with the generic Double ML recipe
+
+- Test $H_0: ATT = ATE$, $H_0: LATE = ATE$ and $H_0: (ATT - ATE) / ATE \times 100 = 0$ using the chain rule of influence functions
+
+<br>
+
+# 401(k) dataset again
+
+We again use the data of the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (*p401*) on net assets (*net_tfa*). Since then, the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the few controls ensure that the programs run not as long as with datasets that you hope to have for your applications.
+
+```{r, warning=F,message=F}
+library(hdm)
+library(causalDML)
+library(grf)
+library(tidyverse)
+
+set.seed(1234) # for replicability
+
+# Get data
+data(pension)
+# Outcome
+Y = pension$net_tfa
+# Treatment
+W = pension$p401
+# Treatment
+Z = pension$e401
+# Create main effects matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+We want to estimate the effect of 401(k) participation on net assets. We leverage two identification strategies:
+
+- Based on unconfoundedness as before
+
+- using eligibility for 401(k) as instrument for actual participation
+
+and use estimators that assume constant effects (partially linear) and allow for heterogeneous effects (ATE, ATT, LATE). 
+
+In total we want to implement five estimators:
+
+- partially linear Double ML (PL)
+
+- AIPW-ATE Double ML (ATE)
+
+- AIPW-ATE Double ML (ATT)
+
+- partially linear IV Double ML (PL-IV)
+
+- AIPW-LATE Double ML (LATE)
+
+<br>
+<br>
+
+# Nuisance parameters
+
+We need a bunch of nuisance parameters to do so. The ones we know already are 
+
+- $e(X)=E[W|X]$ coded as `exhat`
+
+- $m(X)=E[Y|X]$ coded as `mxhat`
+
+- $m(0,X)=E[Y|W=0,X]$ coded as `mwhat0`
+
+- $m(1,X)=E[Y|W=1,X]$ coded as `mwhat1`
+
+Additionally, we need
+
+- $h(X)=E[Z|X]$ to be coded as `hhat`
+
+- $m_z(0,X)=E[Y|Z=0,X]$ to be coded as `mzhat0`
+
+- $m_z(1,X)=E[Y|Z=1,X]$ to be coded as `mzhat1`
+
+- $e(0,X)=E[W|Z=0,X]$ to be coded as `ezhat0`
+
+- $e(1,X)=E[W|Z=1,X]$ to be coded as `ezhat1`
+
+
+```{r}
+n = length(Y)
+nfolds = 5
+fold = sample(1:nfolds,n,replace=T)
+
+exhat = mxhat = mwhat0 = mwhat1 = hhat = mzhat0 = mzhat1 = ezhat0 = ezhat1 = rep(NA,n)
+  
+for (i in 1:nfolds){
+  rfe = regression_forest(X[fold != i,],W[fold != i])
+  exhat[fold == i] = predict(rfe, X[fold == i,])$predictions
+  
+  rfm = regression_forest(X[fold != i,],Y[fold != i])
+  mxhat[fold == i] = predict(rfm, X[fold == i,])$predictions
+  
+  rfm0 = regression_forest(X[fold != i & W==0,],Y[fold != i & W==0])
+  mwhat0[fold == i] = predict(rfm0, X[fold == i,])$predictions
+
+  rfm1 = regression_forest(X[fold != i & W==1,],Y[fold != i & W==1])
+  mwhat1[fold == i] = predict(rfm1, X[fold == i,])$predictions
+
+  rfh = regression_forest(X[fold != i,],Z[fold != i])
+  hhat[fold == i] = predict(rfh, X[fold == i,])$predictions
+
+  rfmz0 = regression_forest(X[fold != i & Z==0,],Y[fold != i & Z==0])
+  mzhat0[fold == i] = predict(rfmz0, X[fold == i,])$predictions
+
+  rfmz1 = regression_forest(X[fold != i & Z==1,],Y[fold != i & Z==1])
+  mzhat1[fold == i] = predict(rfmz1, X[fold == i,])$predictions
+
+  rfez0 = regression_forest(X[fold != i & Z==0,],W[fold != i & Z==0])
+  ezhat0[fold == i] = predict(rfez0, X[fold == i,])$predictions
+
+  rfez1 = regression_forest(X[fold != i & Z==1,],W[fold != i & Z==1])
+  ezhat1[fold == i] = predict(rfez1, X[fold == i,])$predictions
+}
+```
+
+and finally the easy $e=E[W]$ coded as `ehat`
+
+```{r}
+ehat = mean(W)
+```
+
+<br>
+<br>
+
+# $\psi_a$ and $\psi_b$ of each scores
+
+Now we code up the two components of the score, that will help us later to get the point estimate and the standard error using the same function.
+
+## PL
+
+The empirical version of the score looks like this:
+$$\psi^{PL}(O;\hat{\tau},\hat{\eta}) = \hat{\tau} \underbrace{(-1)(W - \hat{e}(X))^2}_{\psi_a^{PL}} +  \underbrace{ (Y - \hat{m}(X)) (W - \hat{e}(X))}_{\psi_b^{PL}}$$
+To follow the recipe, we need two components:
+
+1. $\psi_a^{PL}$ to be coded as `pa_pl`
+
+2. $\psi_b^{PL}$ to be coded as `pb_pl`
+
+```{r}
+pa_pl = -(W - exhat)^2
+pb_pl = (Y - mxhat) * (W - exhat)
+-sum(pb_pl) / sum(pa_pl)
+```
+
+<br>
+
+## ATE
+
+The empirical version of the score looks like this:
+$$\psi^{ATE}(O;\hat{\tau}_{ATE},\hat{\eta})= \hat{\tau}_{ATE} \underbrace{(-1)}_{\psi_a^{ATE}} + \underbrace{\hat{m}(1,X)  -\hat{ m}(0,X)  + \frac{W (Y - \hat{m}(1,X) )}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X) )}{1-\hat{e}(X)} }_{\psi_b^{ATE}}$$
+To follow the recipe, we need two components:
+
+1. $\psi_a^{ATE}$ to be coded as `pa_ate`
+
+2. $\psi_b^{ATE}$ to be coded as `pb_ate`
+
+
+```{r}
+pa_ate = rep(-1,length(Y))
+pb_ate = mwhat1 - mwhat0 + W * (Y - mwhat1) / ehat - (1 - W) * (Y - mwhat0) / (1-ehat)
+-sum(pb_ate) / sum(pa_ate)
+```
+
+<br>
+
+## ATT
+
+The empirical version of the score looks like this:
+$$\psi^{ATT}(O;\hat{\tau}_{ATT},\hat{\eta})= \hat{\tau}_{ATT} \underbrace{(-1)\frac{W}{\hat{e}}}_{\psi_a^{ATT}} + \underbrace{\dfrac{W}{\hat{e}} (Y - \hat{m}(0,X)) -  \dfrac{ (1-W) \hat{e}(X)  }{\hat{e} (1-\hat{e}(X))} (Y - \hat{m}(0,X)) }_{\psi_b^{ATT}}$$
+To follow the recipe, we need two components:
+
+1. $\psi_a^{ATT}$ to be coded as `pa_att`
+
+2. $\psi_b^{ATT}$ to be coded as `pb_att`
+
+
+```{r}
+pa_att = -W / ehat
+pb_att = W * (Y - mwhat0) / ehat - ( (1 - W) * exhat ) * (Y - mwhat0) / (ehat * (1 - ehat))
+-sum(pb_att) / sum(pa_att)
+```
+
+<br>
+
+
+## PL-IV
+
+The empirical version of the score looks like this:
+$$\psi^{IV}(O;\hat{\tau}_{IV},\hat{\eta})= \hat{\tau}_{IV} \underbrace{(-1) (W - \hat{e}(X)) (Z - \hat{h}(X))}_{\psi_a^{IV}} + \underbrace{(Y - \hat{m}(X)) (Z - \hat{h}(X))}_{\psi_b^{IV}}$$
+To follow the recipe, we need two components:
+
+1. $\psi_a^{IV}$ to be coded as `pa_iv`
+
+2. $\psi_b^{IV}$ to be coded as `pb_iv`
+
+
+```{r}
+pa_iv = -(W - exhat) * (Z - hhat)
+pb_iv = (Y - mxhat) * (Z - hhat) 
+-sum(pb_iv) / sum(pa_iv)
+```
+
+<br>
+
+
+## LATE
+
+The empirical version of the score looks like this:
+$$
+\begin{align}
+\psi^{LATE}(O;\hat{\tau}_{LATE},\hat{\eta}) & = \hat{\tau}_{LATE} \underbrace{ (-1) \Bigg[ \hat{e}(1,X) - \hat{e}(0,X) + \dfrac{Z (W - \hat{e}(1,X))}{\hat{h}(X)} - \dfrac{(1-Z) (W - \hat{h}(0,X))}{1-\hat{h}(X)} \Bigg] }_{\psi_a^{LATE}} \\
+& \quad + \underbrace{\hat{m}_z(1,X) - \hat{m}_z(0,X) + \dfrac{Z (Y - \hat{m}_z(1,X))}{\hat{h}(X)} - \dfrac{(1-Z) (Y - \hat{m}_z(0,X))}{1-\hat{h}(X)}}_{\psi_b^{LATE}}
+\end{align}
+$$
+To follow the recipe, we need two components:
+
+1. $\psi_a^{LATE}$ to be coded as `pa_late`
+
+2. $\psi_b^{LATE}$ to be coded as `pb_late`
+
+
+```{r}
+pa_late = -( ezhat1 - ezhat0 + Z * (W - ezhat1) / hhat - (1 - Z) * (W - ezhat0) / (1-hhat) )
+pb_late = mzhat1 - mzhat0 + Z * (Y - mzhat1) / hhat - (1 - Z) * (Y - mzhat0) / (1-hhat)
+-sum(pb_late) / sum(pa_late)
+```
+
+<br>
+<br>
+
+# A generic function for Double ML with linear score
+
+Now we write a function that takes any $\psi_a$ and $\psi_b$ as inputs and outputs
+
+- point estimate 
+
+- standard error
+
+- t-value
+
+- p-value
+
+
+The function implements the following steps:
+
+1. Calculate point estimate as $\hat{\theta} = -\frac{\sum_i\psi_b(O_i;\hat{\eta}_i)}{\sum_i \psi_a(O_i;\hat{\eta}_i)} $
+
+2. $\hat{\theta}$ can then be used to complete the empirical score as $\psi(O;\hat{\theta},\hat{\eta}) = \hat{\theta} \psi_a(O_i;\hat{\eta}_i) + \psi_b(O_i;\hat{\eta}_i)$
+
+3. Create influence function $\Psi(O;\hat{\theta},\hat{\eta}) = - \frac{\psi(O;\hat{\theta},\hat{\eta})}{N^{-1} \sum_i \psi_a(O_i;\hat{\eta}_i)}$
+
+4. Estimate the variance as $\hat{\sigma}^2 = Var(\Psi(O;\hat{\theta},\hat{\eta}))$ or $\hat{\sigma}^2 = \frac{N^{-1} \sum_i  \psi(O_i;\hat{\theta},\hat{\eta}_i)^2}{[N^{-1} \sum_i  \psi_a(O_i;\hat{\eta}_i)]^2}$
+
+5. Get the standard error as $se(\hat{\theta}) = \sqrt{\frac{\hat{\sigma}^2}{N}}$
+
+```{r}
+DML_inference = function(psi_a,psi_b) {
+  N = length(psi_a)
+  theta = -sum(psi_b) / sum(psi_a)
+  psi = theta * psi_a + psi_b
+  Psi = - psi / mean(psi_a)
+  sigma2 = var(Psi)
+  # sigma2 = mean(psi^2) / mean(psi_a)^2
+  se = sqrt(sigma2 / N)
+  t = theta / se
+  p = 2 * pt(abs(t),N,lower = FALSE)
+  result = c(theta,se,t,p)
+  return(result)
+}
+```
+
+<br>
+<br>
+
+
+# Results
+
+```{r}
+results = matrix(NA,5,4)
+rownames(results) = c("PL","ATE","ATT","PL-IV","LATE")
+colnames(results) = c("Effect","S.E.","t","p")
+results[1,] = DML_inference(pa_pl,pb_pl)
+results[2,] = DML_inference(pa_ate,pb_ate)
+results[3,] = DML_inference(pa_att,pb_att)
+results[4,] = DML_inference(pa_iv,pb_iv)
+results[5,] = DML_inference(pa_late,pb_late)
+printCoefmat(results,has.Pvalue = TRUE)
+```
+
+
+```{r}
+data.frame(thetas = results[,1],ses = results[,2],
+                Estimator = rownames(results),
+                cil = results[,1] - 1.96*results[,2],
+                ciu = results[,1] + 1.96*results[,2])  %>% 
+  ggplot(aes(x=Estimator,y=thetas,ymin=cil,ymax=ciu)) + geom_point(size=2.5) + geom_errorbar(width=0.15)  +
+  geom_hline(yintercept=0)
+```
+
+
+<br>
+<br>
+
+
+# ATT vs. ATE
+
+Assume that we want to test whether $ATT=ATE$.
+
+For this purpose, we create the new parameter $\Delta_{ATT} = \tau_{ATT} - \tau_{ATE}$ and want to test $H_0:\Delta(\tau_{ATT},\tau_{ATE}) = 0$
+
+The influence function of this new parameter can derived like this:
+$$
+\begin{align*}
+  \Psi_\Delta & = \overbrace{\frac{\delta \Delta}{\delta \tau_{ATT}}}^{=1} \Psi_{\tau_{ATT}} + \overbrace{\frac{\delta \Delta}{\delta \tau_{ATE}}}^{=-1} \Psi_{\tau_{ATE}} \\
+  & = \Psi_{\tau_{ATT}} - \Psi_{\tau_{ATE}}
+\end{align*}
+$$
+
+Define for convenience and later use a `Psi_maker()` function that creates the influence function for generic $\psi_a$ and $\psi_b$:
+
+```{r}
+Psi_maker = function(psi_a,psi_b) {
+  theta = -sum(psi_b) / sum(psi_a)
+  psi = theta * psi_a + psi_b
+  Psi = - psi / mean(psi_a)
+  return(Psi)
+}
+```
+
+Now this can be used to test $H_0:\Delta(\tau_{ATT},\tau_{ATE}) = 0$:
+
+```{r}
+# Calculate parameters
+att = - sum(pb_att) / sum(pa_att)
+ate = - sum(pb_ate) / sum(pa_ate)
+Delta_att = att - ate
+# Create influence function for new parameter
+Psi_Delta_att = Psi_maker(pa_att,pb_att) - Psi_maker(pa_ate,pb_ate)
+# Calculate standard errors, t and pvalues
+se_Delta_att = sqrt(var(Psi_Delta_att)/length(Psi_Delta_att))
+t_Delta_att = Delta_att / se_Delta_att
+p_Delta_att = 2 * pt(abs(t_Delta_att),length(Psi_Delta_att),lower = FALSE)
+# Print results
+result = matrix(c(Delta_att,se_Delta_att,t_Delta_att,p_Delta_att),nrow = 1)
+rownames(result) = c("ATT-ATE")
+colnames(result) = c("Delta","S.E.","t","p")
+printCoefmat(result,has.Pvalue = TRUE)
+```
+
+We observe that the different between ATT and ATE is highly significant. This may come as a surprise given that the confidence intervals overlap in the graph above. However, such eyeballing does not work for correlated estimators and the ATT and ATE estimator are clearly correlated.
+
+<br>
+<br>
+
+
+# LATE vs. ATE
+
+
+Similarly, we can investigate $H_0:\Delta_{LATE} = \tau_{LATE} - \tau_{ATE} = 0$. (0.5P)
+
+The derivation works like before:
+
+$$\begin{align}
+\Psi_{\Delta_{LATE}} &= \underbrace{\frac{\partial \Delta_{LATE}}{\partial \tau_{LATE}}}_{=1} \Psi_{LATE} + \underbrace{\frac{\partial \Delta_{LATE}}{\partial \tau_{ATE}}}_{=-1} \Psi_{ATE} \\
+\Psi_{\Delta_{LATE}} &=\Psi_{LATE} - \Psi_{ATE}
+\end{align}$$
+
+and also the inference follows the same recipe:
+
+```{r}
+# CalcuLATE
+late = -sum(pb_late)/sum(pa_late) 
+# New target parameter
+Delta_late = late - ate 
+# Create influence function for new parameter
+Psi_Delta_late = Psi_maker(pa_late,pb_late) - Psi_maker(pa_ate,pb_ate)
+# Print results
+se_Delta_late = sqrt(var(Psi_Delta_late)/length(Psi_Delta_late))
+t_Delta_late = Delta_late/se_Delta_late
+p_Delta_late = 2 * pt(abs(t_Delta_late),length(Psi_Delta_late),lower = FALSE) # get a p-value (at what level would be not reject?)
+
+results = matrix(c(Delta_late,se_Delta_late,t_Delta_late,p_Delta_late),nrow = 1)
+rownames(results) = c("LATE-ATE")
+colnames(results) = c("Delta","S.E.","t","p")
+printCoefmat(results,has.Pvalue = TRUE)
+```
+
+However, the difference between LATE and ATE is not statistically significant.
+
+<br>
+<br>
+
+# How large is the difference between ATT and ATE in %?
+
+Finally, let's look at a more complicated new parameter $\Delta\% = \frac{\tau_{ATT} - \tau_{ATE}}{\tau_{ATE}}\times 100$. 
+
+Following the recipe, we derive the new influence function:
+
+$$\begin{align}
+\Psi_{\Delta\%} &= \frac{\partial \Delta\%}{\partial \tau_{ATT}} \Psi_{ATT} + \frac{\partial \Delta\%}{\partial \tau_{ATE}} \Psi_{ATE} \\
+\Psi_{\Delta\%} &=100 \cdot \frac{1}{\tau_{ATE}} \Psi_{ATT} -100 \cdot \frac{\tau_{ATT}}{\tau_{ATE}^2} \Psi_{ATE}
+\end{align}$$
+
+$\Psi_{ATT}$ and $\Psi_{ATE}$ can be obtained using `Psi_maker`. $\tau_{ATE}$ and $\tau_{ATT}$ can be replaced by their estimates:
+
+```{r}
+# New parameter
+Delta_pc = (att-ate)/ate*100 
+# New IF
+Psi_Delta_pc = 100 / ate * Psi_maker(pa_att, pb_att) - 100 * att / (ate^2) * Psi_maker(pa_ate, pb_ate)
+# Results
+se_Delta_pc = sqrt(var(Psi_Delta_pc)/length(Psi_Delta_pc))
+t_Delta_pc = Delta_pc/se_Delta_pc
+p_Delta_pc = 2 * pt(abs(t_Delta_pc),length(Psi_Delta_pc),lower = FALSE)
+results = matrix(c(Delta_pc,se_Delta_pc,t_Delta_pc,p_Delta_pc),nrow = 1)
+rownames(results) = c("Delta%")
+colnames(results) = c("Delta","S.E.","t","p")
+printCoefmat(results,has.Pvalue = TRUE)
+```
+
+Not surprisingly the percentage change is significant, like the plain level difference between ATT and ATE. However, the t-values are not identical, which illustrates that we explicitly calculate the inference for such new parameters. And influence functions provide a neat tool to do so.
+
+<br>

@@ -1,0 +1,141 @@
+---
+title: "Basics: OLS and Frisch-Waugh"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Handcode OLS
+
+- Handcode Frisch-Waugh Theorem
+
+<br>
+
+# Introducing the data
+
+The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the relatively few covariates ensure that the programs do not run too long.
+
+```{r, warning = F, message = F}
+# Load the packages required for later
+library(hdm)
+library(tidyverse)
+
+set.seed(1234) # for replicability
+options(scipen = 10) # Switch off scientific notation
+
+# Get data
+data(pension)
+```
+
+<br>
+<br>
+
+
+# Handcoding OLS
+
+Run the OLS regression $net\_tfa = \beta_0 + \beta_1 age + \beta_2 db + \beta_3 educ + \beta_4 fsize + \beta_5 hown + \beta_6 inc + \beta_7 male + \beta_8 marr + \beta_9 pira + \beta_{10} twoearn + \epsilon$ using the base command:
+
+```{r}
+ols = lm(data = pension,
+          net_tfa ~ age + db + educ + fsize + hown + inc + male + marr + pira + twoearn )
+summary(ols)
+```
+
+Now implement the point estimator manually using the matrix representation of the parameters $\boldsymbol{\hat{\beta}} = \boldsymbol{(X'X)^{-1}X'Y}$:
+
+```{r}
+X = model.matrix(data = pension,
+          ~ age + db + educ + fsize + hown + inc + male + marr + pira + twoearn )
+Y = pension[,"net_tfa"]
+
+hand_ols = solve(t(X) %*% X) %*% t(X) %*% Y
+
+hand_ols
+```
+
+The point estimates look very similar, but let`s check explicitly whether they are equal:
+
+```{r}
+all.equal(as.numeric(hand_ols),as.numeric(ols$coefficients))
+
+```
+
+<br>
+<br>
+
+# Frisch-Waugh
+
+The [Frisch-Waugh theorem](https://en.wikipedia.org/wiki/Frisch%E2%80%93Waugh%E2%80%93Lovell_theorem) tells us that we can get, e.g., $\hat{\beta_1}$ also in the following way
+
+1. Run regression $age = \alpha_0 + \alpha_1 db + \alpha_2 educ + \alpha_3 fsize + \alpha_4 hown + \alpha_5 inc + \alpha_6 male + \alpha_7 marr + \alpha_8 pira + \alpha_{9} twoearn + V$
+
+```{r}
+ols_age = lm(data = pension,
+          age ~ db + educ + fsize + hown + inc + male + marr + pira + twoearn )
+Vhat = ols_age$residuals
+```
+
+2. Run regression $net\_tfa = \gamma_0 + \gamma_1 db + \gamma_2 educ + \gamma_3 fsize + \gamma_4 hown + \gamma_5 inc + \gamma_6 male + \gamma_7 marr + \gamma_8 pira + \gamma_{9} twoearn + U$
+
+```{r}
+ols_net_tfa = lm(data = pension,
+          net_tfa ~ db + educ + fsize + hown + inc + male + marr + pira + twoearn )
+Uhat = ols_net_tfa$residuals
+```
+
+3. Run residual-on-residual regression $\hat{U} = \tau \hat{V} + \epsilon$
+
+```{r}
+summary(lm(Uhat ~ 0 + Vhat))
+```
+
+This looks indeed very similar to the `r ols$coefficients[2]` estimated by the `lm()` function, but let's check it formally:
+
+```{r}
+all.equal(as.numeric(lm(Uhat ~ 0 + Vhat)$coefficients),
+          as.numeric(ols$coefficients[2]))
+```
+
+$\Rightarrow$ The standard and the manual Frisch-Waugh $\hat{\beta}_1$ are identical.
+
+<br>
+
+*(optional)*: Check also the other parameters $\hat{\beta}_2$ to $\hat{\beta}_{10}$. 
+
+<br>
+
+
+
+
+
+

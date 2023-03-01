@@ -1,0 +1,339 @@
+---
+title: "Supervised ML: Lasso"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "01/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+Goal:
+
+- See the (Post-)Lasso implementations of `glmnet` and `hdm` in action
+
+<br>
+
+# Introducing the data
+
+The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the relatively few covariates ensure that the programs do not run too long.
+
+
+```{r, warning = F, message = F}
+# Load the packages required for later
+library(hdm)
+library(glmnet)
+library(tidyverse)
+library(skimr)
+
+set.seed(1234) # for replicability
+options(scipen = 999) # Switch off scientific notation
+
+data(pension) # Find variable description if you type ?pension in console
+Y = pension$net_tfa
+# Create main effect matrix
+X1 = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+```
+
+Let's have a quick look at the covariates and the outcome to be predicted:
+
+```{r}
+skim(X1)
+hist(Y)
+```
+
+<br>
+<br>
+
+
+# First steps with (Post-)Lasso
+
+## Lasso using `glmnet` package
+
+The most mature and probably most popular package for using Lasso is `glmnet`. It is written by the inventors of Lasso.
+
+As a first step, let's use Lasso with the ten control variables. That is, we want to predict net assets using the ten main effects.
+
+*Remark:* Note that most commands we use throughout the course require to first generate a covariate matrix that is then used as input to the functions.
+
+```{r}
+lasso = glmnet(X1,Y)
+plot(lasso, xvar = "lambda",label=TRUE)
+```
+
+As the scale of the variables is very different, we standardize them to get a clearer picture.
+
+```{r}
+lasso = glmnet(scale(X1),Y)
+plot(lasso, xvar = "lambda",label=TRUE)
+```
+
+
+Not very surprisingly the income variable (column 6 in the covariate matrix) is selected first as soon as the penalty term is low enough to allow a non-zero coefficient.
+
+Of course using Lasso with only 10 variables is funny, but let's see what value of the penalty term would be chosen by cross-validation using the `cv.glmnet` command:
+
+```{r}
+cv_lasso = cv.glmnet(X1,Y)
+plot(cv_lasso)
+```
+
+The cross-validated MSE is lowest when the penalty term is also very low. In this case Lasso is basically OLS.
+
+Check the Lasso coefficients at the cross-validated minimum:
+
+```{r}
+coef(cv_lasso,s = "lambda.min")
+```
+
+and observe that they are very close to the plain OLS coefficients:
+
+```{r}
+summary( lm(Y ~ X1) )
+```
+
+<br>
+
+## Post-Lasso using `hdm`
+
+Post-Lasso is available in the `hdm` package. Its `rlasso` command runs Post-Lasso:
+
+```{r}
+post_lasso = rlasso(X1,Y)
+summary(post_lasso)
+```
+
+Post-Lasso is more selective. It kicks out 4 variables. However, the remaining 6 coefficients are estimated using plain OLS without any shrinkage as the following exercise where we reestimate plain OLS with the six selected variables confirms:
+
+```{r}
+summary( lm(Y ~ X1[,post_lasso$coefficients[-1] != 0]) )
+```
+
+Note that the Lasso commands do not provide any standard errors or p-values. This is not a bug. Inference on penalized coefficients like for Lasso or after variable selection like for Post-Lasso is usually not possible. The parameters are tools to get good predictions. That's it. They are not themselves parameters we care about.
+
+<br>
+<br>
+
+# Out-of-sample prediction with (Post-)Lasso
+
+Supervised Machine Learning is mostly used to predict values in a test sample that was not available for estimating/training the model. Let's check how we can implement this.
+
+First, we split the sample into a training sample with 2/3 of the data and a test sample with 1/3 of the data:
+
+```{r}
+# Create training (2/3) and test (1/3) sample
+test_fraction = 1/3
+test_size = floor(test_fraction * length(Y))
+# Index for test observations
+test_ind = sample(1:length(Y), size = test_size)
+# Create training and test data
+X_tr = X1[-test_ind,]
+X_te = X1[test_ind,]
+Y_tr = Y[-test_ind]
+Y_te = Y[test_ind]
+```
+
+Now we run again `cv.glmnet` but only using the training data and apply the `predict` function to get the fitted values for the test data. Under the hood the predict command does nothing else than what you did most likely in your first econometrics exam where you calculated fitted values for an observation by plugging in the covariate values into the estimated linear model:
+
+```{r}
+cv_lasso = cv.glmnet(X_tr,Y_tr)
+Y_hat_lasso = predict(cv_lasso, newx = X_te, s = "lambda.min")
+```
+
+This is the distribution of the predicted values in the test set:
+
+```{r}
+hist(Y_hat_lasso)
+```
+
+We can also plot the predictions against the observable outcome:
+
+```{r}
+plot(Y_hat_lasso,Y_te)
+```
+
+We see that extreme wealth values are hard to forecast. Those outliers mask that the model does a decent job in predicting the values out-of-sample with a correlation around 0.45 between predicted and actual values:
+
+```{r}
+cor(Y_hat_lasso,Y_te)
+```
+
+The standard measure to assess out-of-sample prediction quality is the mean-squared error $MSE^{te} = 1/N^{te}\sum_i(Y_i^{te}-\hat{Y_i})^2$:
+
+```{r}
+mse_lasso = mean( (Y_te - Y_hat_lasso)^2 )
+mse_lasso
+```
+
+However, this number is quite useless in terms of interpretation. Thus, we rather calculate the out-of-sample $R^2 = 1 - MSE^{te} / Var(Y^{te})$. It has the same interpretation as the $R^2$ you are probably used to. It provides the fraction of variation in the test outcomes that is explained by the model:
+
+```{r}
+1 - mse_lasso / var(Y_te)
+```
+
+The same can be done with the Post-Lasso model:
+
+```{r}
+Y_hat_plasso = predict(post_lasso, newdata = X_te)
+mse_plasso = mean( (Y_te - Y_hat_plasso)^2 )
+1 - mse_plasso / var(Y_te)
+```
+
+
+<br>
+<br>
+
+# Including interactions and compare performance
+
+The previous section illustrated the use of Lasso and Post-Lasso using only the main effects. This is not the setting where they are supposed to provide a big advantage over OLS.
+
+However, there is usually no reason to believe that only main effects are relevant for predicting wealth. In the following I run a computationally expensive experiment (ran on my laptop over night).
+
+We consider four different covariate matrices:
+
+- *X1* with 10 variables: Only the main effects
+
+- *X2* with 88 variables: Second order polynomials of the continuous variables age, education and income as well as first order interactions of all variables
+
+- *X3* with 567 variables: Third order polynomials of the continuous variables age, education and income as well as second order interactions of all variables
+
+- *X4* with 2270 variables: Fourth order polynomials of the continuous variables age, education and income as well as third order interactions of all variables
+
+
+```{r}
+X2 = model.matrix(~ 0 + (fsize + marr + twoearn + db + pira + hown + male +
+                           poly(age,2) + poly(educ,2) + poly(inc,2))^2, data = pension)
+dim(X2)
+X3 = model.matrix(~ 0 + (fsize + marr + twoearn + db + pira + hown + male +
+                           poly(age,3) + poly(educ,3) + poly(inc,3))^3, data = pension)
+dim(X3)
+X4 = model.matrix(~ 0 + (fsize + marr + twoearn + db + pira + hown + male +
+                           poly(age,4) + poly(educ,4) + poly(inc,4))^4, data = pension)
+dim(X4)
+```
+
+We consider 100 random splits into training and test sample to ensure that our results are not an artifact of one particular split and run OLS, Lasso and Post-Lasso with the four different covariate matrices (Post-Lasso with *X4* is omitted as it would more then double the computation time).
+
+
+```{r}
+# Here we define some useful function to keep the code clean
+# They run the method in the training sample and calcualte the test set R2
+ols_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
+  ols = lm(y_tr ~ x_tr)
+  betas = ols$coefficients
+  betas[is.na(betas)] = 0
+  y_hat = cbind( rep(1,nrow(x_te)) , x_te ) %*% betas
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+lasso_oos_r2 = function(x_tr,y_tr,x_te,y_te,min.lambda = 1e-04) {
+  cv_lasso = cv.glmnet(x_tr,y_tr,lambda.min.ratio = min.lambda)
+  y_hat = predict(cv_lasso, newx = x_te,s = "lambda.min")
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+plasso_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
+  plasso = rlasso(x_te,y_te)
+  y_hat = predict(plasso, newdata = x_te)
+  mse = mean( (y_te - y_hat)^2 )
+  return(1 - mse / var(y_te))
+}
+
+rep = 100 # number of replications
+
+# Container of the results
+results_r2 = matrix(NA,rep,12)
+colnames(results_r2) = c("OLS1","OLS2","OLS3","OLS4",
+                         "Lasso1","Lasso2","Lasso3","Lasso4",
+                         "Post-Lasso1","Post-Lasso2","Post-Lasso3","Post-Lasso4")
+
+# Loop considering different splits
+for (i in 1:rep) {
+  # Draw index for this round
+  temp_ind = sample(1:length(Y), size = test_size)
+
+  # Split into training and test samples
+  X_tr1 = X1[-temp_ind,]
+  X_te1 = X1[temp_ind,]
+  X_tr2 = X2[-temp_ind,]
+  X_te2 = X2[temp_ind,]
+  X_tr3 = X3[-temp_ind,]
+  X_te3 = X3[temp_ind,]
+  X_tr4 = X4[-temp_ind,]
+  X_te4 = X4[temp_ind,]
+  Y_tr = Y[-temp_ind]
+  Y_te = Y[temp_ind]
+  
+  # Get test R2 for method-cov matrix combi
+  results_r2[i,1] = ols_oos_r2(X_tr1,Y_tr,X_te1,Y_te)
+  results_r2[i,2] = ols_oos_r2(X_tr2,Y_tr,X_te2,Y_te)
+  results_r2[i,3] = ols_oos_r2(X_tr3,Y_tr,X_te3,Y_te)
+  results_r2[i,4] = ols_oos_r2(X_tr4,Y_tr,X_te4,Y_te)
+  results_r2[i,5] = lasso_oos_r2(X_tr1,Y_tr,X_te1,Y_te)
+  results_r2[i,6] = lasso_oos_r2(X_tr2,Y_tr,X_te2,Y_te)
+  # Increasing min.lambda to speed up computation
+  results_r2[i,7] = lasso_oos_r2(X_tr3,Y_tr,X_te3,Y_te,min.lambda = 0.01)
+  results_r2[i,8] = lasso_oos_r2(X_tr4,Y_tr,X_te4,Y_te,min.lambda = 0.05)
+  results_r2[i,9] = plasso_oos_r2(X_tr1,Y_tr,X_te1,Y_te)
+  results_r2[i,10] = plasso_oos_r2(X_tr2,Y_tr,X_te2,Y_te)
+  results_r2[i,11] = plasso_oos_r2(X_tr3,Y_tr,X_te3,Y_te)
+  # results_r2[i,12] = plasso_oos_r2(X_tr4,Y_tr,X_te4,Y_te)
+}
+```
+
+First, let's check the mean out-of-sample $R^2$ for the different methods over the 100 different splits:
+
+```{r}
+t( round(colMeans(results_r2),3) )
+```
+
+Some observations from this specific application:
+
+- Running OLS with third and foruth order terms is hopeless. The mean $R^2$ becomes even negative. How can this happen? The $R^2$ is negative if the prediction model performs worse than just using the outcome mean for prediction. This is exactly the overfitting behaviour that we discuss in the slides.
+
+- OLS with second order terms is quite competitive.
+
+- Providing the second order terms improves predictions of all methods. However, higher order terms still improve over just using main effects, but perform worse than second order terms $\Rightarrow$ just spamming Lasso with interactions not necessarily improves prediction
+
+- Lasso performs slightly better than Post-Lasso. This is not a general results and can differ for other datasets.
+
+These observations are also visible in the boxplots of the $R^2$:
+
+
+```{r}
+as.data.frame(results_r2[,-c(3:4)]) %>% pivot_longer(cols=everything(),names_to = "Method",values_to = "R2") %>%
+  ggplot(aes(x = R2, y = Method)) + geom_boxplot()
+```
+
+In general, every dataset is different. There is no rule of thumb which method and specification performs best. However, the good thing is that we can check the performance of different candidates. For the dataset at hand it seems that Lasso with second order terms would be a good choice.
+
+<br>
+<br>
+
+

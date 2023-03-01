@@ -1,0 +1,251 @@
+---
+title: "Causal ML: Offline policy learning"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+<br>
+
+Goals:
+
+- Handcode offline policy learning with binary treatment
+
+- Use the `policytree` package
+
+<br>
+
+# 401(k) dataset again
+
+We again use the data of the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (*p401*) on net assets (*net_tfa*). Since then, the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+
+- *age*: age
+
+- *db*: defined benefit pension
+
+- *educ*: education (in years)
+
+- *fsize*: family size
+
+- *hown*: home owner
+
+- *inc*: income (in US $)
+
+- *male*: male
+
+- *marr*: married
+
+- *pira*: participation in individual retirement account (IRA)
+
+- *twoearn*: two earners
+
+However, it is publicly available and the few controls ensure that the programs run not as long as with datasets that you hope to have for your applications.
+
+```{r, warning=F,message=F}
+# To install the causalDML package uncomment the following two lines
+# library(devtools)
+# install_github(repo="MCKnaus/causalDML")
+library(hdm)
+library(causalDML)
+library(glmnet)
+library(tidyverse)
+library(rpart)
+library(partykit)
+library(rpart.plot)
+library(policytree)
+
+set.seed(1234) # for replicability
+
+# Get data
+data(pension)
+# Treatment
+W = pension$p401
+# Outcome
+Y = pension$net_tfa
+# Y[W==1] = Y[W==1] - 5000 # optional to see more action
+# Create main effects matrix
+X = model.matrix(~ 0 + age + db + educ + fsize + hown + inc + male + marr + pira + twoearn, data = pension)
+X2 = model.matrix(~ 0 + (age + db + educ + fsize + hown + inc + male + marr + pira + twoearn)^2, data = pension)
+# Define labels to be used in plot later
+w_label = c("No 401(k)","401(k)")
+```
+
+<br>
+<br>
+
+# Double ML for AIPW with `causalDML` package
+
+We create the pseudo outcome
+$$\tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}}$$
+
+by running the `DML_aipw` function.
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+aipw = DML_aipw(Y,W,X)
+
+# If you have more time, tune the forest
+# forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# aipw = DML_aipw(Y,W,X,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(aipw$ATE)
+```
+
+<br>
+<br>
+
+
+# Policy learning as classification problem
+
+## Lasso
+
+In the lecture slides we derived that policy learning with a binary treatment can be operationalized as weighted classification problem:
+$$\hat{\pi} = argmax_{\pi \in \Pi} \left\{ \frac{1}{N} \sum_{i=1}^N  \underbrace{|\tilde{Y}_{i,ATE}|}_{\text{weight}}~ 
+\underbrace{sign(\tilde{Y}_{i,ATE})}_{\text{to be classified}} ~ \overbrace{(2 \pi(X_i) - 1)}^{\text{function to be learned}}] \right\}$$
+
+where the pseudo-outcome $\tilde{Y}_{ATE}$ is required to define the sign and the weight. It can be retrieved from `aipw$ATE$delta`.
+
+One possibility to implement policy learning is to use Lasso for Logistic regression. We apply a design matrix with first order interactions to account for potential non-linearities of the effects:
+
+```{r}
+pseudo_outcome = aipw$ATE$delta
+sign = sign(pseudo_outcome)
+cvfit = cv.glmnet(X2, sign, family = "binomial", type.measure = "class", weights = abs(pseudo_outcome))
+plot(cvfit)
+```
+
+Now use the `predict` function to get the estimated optimal assignment:
+
+```{r}
+pi_lasso = as.numeric(predict(cvfit,newx=X2, type = "class", s = "lambda.min"))
+table(pi_lasso)
+```
+
+Only very few observations are assigned to the control condition. Let's see how we can describe them in the spirit of a CLAN analysis:
+
+```{r}
+CLAN_lasso = cbind(colMeans(X[pi_lasso == -1,]),colMeans(X[pi_lasso == 1,]))
+colnames(CLAN_lasso) = c("No 401(k)","401(k)")
+round(CLAN_lasso,2)
+```
+
+<br>
+
+## Classification tree
+
+An alternative is to use classification trees to solve the weighted classification problem:
+
+```{r}
+df = data.frame(sign = sign,pseudo_outcome = pseudo_outcome,X)
+tree = rpart(sign ~ X, weights = abs(pseudo_outcome), method = "class")
+# print(tree)
+rpart.plot(tree)
+```
+
+Also only very few assigned to "No 401(k)".
+
+```{r}
+# Output takes values 1 and 2, therefore recode to -1/1
+pi_tree = 2 * (as.numeric(predict(tree,type = "class")) - 1.5)
+table(pi_tree)
+```
+
+Run a CLAN analysis as above:
+
+```{r}
+CLAN_tree = cbind(colMeans(X[pi_tree == -1,]),colMeans(X[pi_tree == 1,]))
+colnames(CLAN_tree) = c("No 401(k)","401(k)")
+round(CLAN_tree,2)
+```
+
+How would you check to what extend Lasso and Tree classifications agree?
+
+```{r}
+table(pi_lasso,pi_tree)
+```
+<br>
+<br>
+
+
+# Policy learning with `policytree` package
+
+The `policytree` package does not explicitly solve the weighted classification problem, but searches the optimal tree over all possible splits for a given depth (not greedy). It requires $\hat{\Gamma}$ matrix
+$$
+\hat{\Gamma} = 
+\begin{bmatrix}
+\hat{\Gamma}_{1,0} & \hat{\Gamma}_{1,1} \\
+\vdots &\vdots \\
+\hat{\Gamma}_{N,0} & \hat{\Gamma}_{N,1}
+\end{bmatrix}
+$$
+
+that is stored in `aipw$APO$gamma`.
+
+## Depth 1 tree
+
+First we specify a depth 1 tree:
+
+
+```{r, warning = F, message = F}
+depth1 = policy_tree(X,aipw$APO$gamma,1)
+plot(depth1,w_label)
+```
+
+The tree says that only very high earners should not be part of the 401(k) plan.
+
+If we check the GATEs like in the *ANB_401k_GATE* notebook, we see where this decision comes from:
+```{r, results='hide'}
+inc = X[,6]
+sr_inc = spline_cate(aipw$ATE$delta,inc)
+```
+
+```{r}
+plot(sr_inc,z_label = "Income")
+```
+
+The effect is estimated to become negative for high-earners. However, I would not take this too serious as there are basically no observations in the high earnings regions:
+
+```{r}
+hist(inc)
+```
+
+However, for the sake of illustration we can see where the decision of the policy tree comes from.
+
+<br>
+<br>
+
+### Depth 2 tree
+
+This is how the depth 2 tree looks like:
+
+```{r}
+depth2 = policy_tree(X,aipw$APO$gamma,2)
+plot(depth2,w_label)
+```
+
+<br>
+<br>
+
+### Depth 3 tree
+
+For the depth 3 tree, we tell the function `policy_tree` to not check every splitting point (`split.step = 1000`), but to only evaluate every 1000th value of a variable. This speeds up the calculation, otherwise it takes much longer to calculate the tree:
+
+```{r}
+depth3 = policy_tree(X,aipw$APO$gamma,3,split.step = 1000)
+plot(depth3,w_label)
+```
+
+I would not take these results too serious as already the depth 1 tree could be overfitting. Instead, see this as illustration of the implementation.
+
+### Potential extension
+
+For the sake of the arguments one could subtract hypothetical costs of, e.g. $5000 from the treated and rerun the analysis. This would lead to more people being assigned to "No 401(k)" because the costs are larger than the benefits. To this end uncomment line 71 and rerun the analysis.
+
+<br>
+
+
