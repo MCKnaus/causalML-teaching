@@ -1,0 +1,554 @@
+---
+title: "Causal ML: AIPW Double ML (ATE)"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Handcode AIPW Double ML for ATE
+
+- Compare partially linear and AIPW Double ML for ATE
+
+- See how partially linear model can go wrong if effects are actually heterogeneous
+
+<br>
+
+
+# Effect homogeneity
+
+## DGP
+
+Consider the following DGP with homogeneous effects and a binary treatment:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The outcome model is $Y = \underbrace{0.1}_{\tau} W + \underbrace{sin(X_1)}_{m(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+This means that we are in a highly nonlinear setting, but only one variable ($X_1$) is relevant and the others are just noise. The treatment model produces in expectation a balanced treatment share with 50% controls and 50% treated.
+
+
+```{r, warning = F, message = F}
+library(hdm)
+library(grf)
+library(causalDML)
+library(tidyverse)
+library(patchwork)
+
+set.seed(1234)
+
+# Set parameters
+n = 200
+p = 10
+theta = 0.1
+
+# Define and plot functions
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m0 = function(x){sin(x)}
+m1 = function(x){m0(x) + theta}
+tau = function(x){m1(x) - m0(x)}
+w = rbinom(n,1,e(x[,1]))
+y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+
+g1 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=e,size=1) + ylab("e") + xlab("X1")
+g2 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=m1,size=1,aes(colour="Y1")) + 
+  stat_function(fun=m0,size=1,aes(colour="Y0")) + ylab("Y") + xlab("X1")
+g3 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=tau,size=1) + ylab(expression(tau)) + xlab("X1")
+g1 / g2 / g3
+```
+
+<br> 
+
+## Hand-coded AIPW w/o cross-fitting
+
+We draw a sample of $N=200$ and estimate the nuisance parameters $e(X)=E[W|X]$, $m(0,X)=E[Y|W=0,X]$ and $m(1,X)=E[Y|W=1,X]$ using random forest without honesty (sample size too small for honesty) and plug the predictions into the pseudo outcome:
+$$\tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}}$$
+
+```{r}
+# No cross-fitting
+# Predict propensity score
+rf = regression_forest(x,w,honesty=F)
+ehat = predict(rf,newdata=x)$predictions
+# Model control outcome using only control and predict for all
+rf = regression_forest(x[w==0,],y[w==0],honesty=F)
+m0hat = predict(rf,newdata=x)$predictions
+# Model control outcome using only control and predict for all
+rf = regression_forest(x[w==1,],y[w==1],honesty=F)
+m1hat = predict(rf,newdata=x)$predictions
+# Generate pseudo-outcome
+pseudo_y =  m1hat - m0hat +
+            w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+```
+
+Take the mean of the pseudo-outcome and run a t-test
+
+```{r}
+mean(pseudo_y)
+t.test(pseudo_y)
+```
+
+or run just an OLS regression with only a constant for point estimation and inference in one step.
+
+```{r}
+summary(lm(pseudo_y~1))
+```
+
+
+<br>
+
+## Hand-coded AIPW with 2-fold cross-fitting
+
+The theoretical results require that we predict the nuisance parameters out-of-sample. The easiest way to do this is two-fold cross-fitting:
+
+- Split the sample in two random subsamples, S1 and S2
+
+- Form prediction models in S1, use it to predict in S2
+
+- Form prediction models in S2, use it to predict in S1
+
+- Plug the prediction in the pseudo-outcome and proceed as above
+
+
+```{r}
+# 2-fold cross-fitting
+m0hat = m1hat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+# Create sample 2 with those not in S1
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1,honesty=F)
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==0,],y1[w1==0],honesty=F)
+m0hat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==1,],y1[w1==1],honesty=F)
+m1hat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2,honesty=F)
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==0,],y2[w2==0],honesty=F)
+m0hat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==1,],y2[w2==1],honesty=F)
+m1hat[index_s1] = predict(rf,newdata=x1)$predictions
+# Generate pseudo-outcome and take and test mean
+pseudo_y =  m1hat - m0hat +
+  w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+summary(lm(pseudo_y~1))
+```
+
+<br>
+
+
+## AIPW with 5-fold cross-fitting
+
+2-fold cross-fitting is easy to implement but especially in small sample sizes using only 50% of the data to estimate the nuisance parameters might lead to unstable predictions.
+
+Thus, we use the `DML_aipw` function of the `causalDML` package to run 5-fold cross-fitting. This package requires to create the methods that we use because it allows for ensemble methods. For now, we focus on the plain random forest.
+
+With 5-fold cross-fitting, we split the sample in 5 folds and use 4 folds (80% of the data) to predict the left out fold (20% of the data). We iterate such that every fold is left out once.
+
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(honesty=F))
+# Run and 
+aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(aipw$APO)
+plot(aipw$APO)
+summary(aipw$ATE)
+```
+
+We observe two things:
+
+- The estimator with5-fold cross-fitting comes closest to the true value
+
+- However, without cross-fitting is also close, but with a much much smallter standard error.
+
+Let's see whether the former is only by chance or systematic, and especially whether the latter is too good to be true.
+
+<br>
+
+
+## Simulation study homogeneous effect setting
+
+We run a simulation study drawing $M=1,000$ samples from the DGP described above and estimate the effect with three different estimators:
+
+- Partially linear model estimated with 5-fold cross-fitting
+
+- AIPW without cross-fitting
+
+- AIPW with 5-fold cross-fitting
+
+Additionally to bias, variance and MSE, we also check the quality of the standard errors via the coverage rate. The coverage rate checks how often the true value is included in the confidence intervals (see [ring toss analogy](https://medium.com/@EpiEllie/having-confidence-in-confidence-intervals-8f881712d837) as an intuitive refresher). 
+
+We would like to have nominal coverage, i.e. for a 95% confidence level it should happen in 95% of the replications, for a 90% confidence level in 90% of the replications, ...
+
+
+```{r}
+# set number of replications
+n_rep = 1000
+# initialize storage for results
+coverage = results = matrix(NA,n_rep,3)
+colnames(coverage) = colnames(results) = c("PL cf5","AIPW no","AIPW cf5")
+
+# start the simulation
+for (i in 1:n_rep) {
+  x = matrix(runif(n*p,-pi,pi),ncol=p)
+  w = rbinom(n,1,e(x[,1]))
+  y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+  
+  # partially linear model
+  pl = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+  results[i,1] = pl$result[1]
+  coverage[i,1] = (pl$result[1] - 1.96*pl$result[2] < theta & pl$result[1] + 1.96*pl$result[2] > theta)
+  
+  # No cross-fitting
+  rf = regression_forest(x,w,honesty=F)
+  ehat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==0,],y[w==0],honesty=F)
+  m0hat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==1,],y[w==1],honesty=F)
+  m1hat = predict(rf,newdata=x)$predictions
+  pseudo_y =  m1hat - m0hat +
+    w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+  results[i,2] = mean(pseudo_y)
+  tt = t.test(pseudo_y)
+  coverage[i,2] = (tt$conf.int[1]  < theta & tt$conf.int[2] > theta)
+
+  # 5-fold cross-fitting with causalDML package reusing the folds and pscores of PL
+  aipw = DML_aipw(y,w,x,ml_y=list(forest),cf=5,
+                  e_mat = cbind(1-pl$e_hat,pl$e_hat),cf_mat = pl$cf_mat)
+  results[i,3] = aipw$ATE$results[1]
+  coverage[i,3] = (aipw$ATE$results[1] - 1.96*aipw$ATE$results[2] < theta & aipw$ATE$results[1] + 1.96*aipw$ATE$results[2] > theta)
+}
+```
+
+We plot the estimator distributions and note that the estimator without cross-fitting seems to be biased:
+
+
+```{r}
+as.data.frame(results) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.5) + theme_bw() + geom_vline(xintercept=theta)
+```
+
+This is confirmed by the decomposition of the MSE (see formula in *SNB_Partially_linear* notebook):
+
+```{r}
+data.frame(method = colnames(results),
+           bias2 = colMeans(results-theta)^2,
+           var = colMeans(sweep(results,2,colMeans(results))^2)) %>% 
+  pivot_longer(-method,names_to = "Component",values_to = "MSE") %>%
+  ggplot(aes(fill=factor(Component,levels=c("var","bias2")), y=MSE, x=method)) + 
+  geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
+```
+
+Notably the variance of the partially linear estimator is smaller than the AIPW, while both are basically unbiased. This makes sense because we looked at the case with actual effect homogeneity, where the partially linear estimator is an efficient estimator in case of homoscedastic errors, which we impose.
+
+Finally, let's check the coverage rate:
+
+```{r}
+data.frame(method = colnames(results),
+           coverage = colMeans(coverage)) %>% 
+  ggplot(aes(y=coverage, x=method)) + geom_hline(yintercept=0.95,linetype="dashed") + 
+  geom_point(size=5,shape=4) + scale_fill_discrete(name = "Component") + ylim(c(0,1)) +
+  geom_hline(yintercept=c(0,1))
+```
+
+Without cross-fitting, the coverage rate of AIPW is only 50%, which reflects the bias and probably also that the estimated standard errors are too small. The other two slightly undercover, but especially cross-fitted AIPW works well in terms of inference.
+
+
+<br>
+<br>
+
+
+
+# Effect heterogeneity with balanced treatment shares
+
+## DGP
+
+Now we introduce heterogeneous treatment effects leaving the rest unchanged:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The outcome model of the treated is $Y(1) = \underbrace{sin(X_1)}_{m_1(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The outcome model of the controls is $Y(0) = \underbrace{cos(X_1+1/2\pi)}_{m_0(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+This means that the ATE is equal to zero ($\tau_{ATE}=0$) but we have tremendous effect heterogeneity: 
+
+
+```{r}
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m1 = function(x){sin(x)}
+m0 = function(x){cos(x+1/2*pi)}
+tau = function(x){m1(x) - m0(x)}
+w = rbinom(n,1,e(x[,1]))
+y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+
+g1 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=e,size=1) + ylab("e") + xlab("X1")
+g2 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=m1,size=1,aes(colour="Y1")) + 
+  stat_function(fun=m0,size=1,aes(colour="Y0")) + ylab("Y") + xlab("X1")
+g3 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=tau,size=1) + ylab(expression(tau)) + xlab("X1")
+g1 / g2 / g3
+```
+
+<br>
+
+
+## Simulation study heterogeneous effect setting
+
+We run a simulation study drawing $M=1,000$ samples from the DGP described above and estimate the effect with three different estimators:
+
+- Partially linear model estimated with 5-fold cross-fitting
+
+- AIPW without cross-fitting
+
+- AIPW with 5-fold cross-fitting
+
+
+```{r}
+# initialize storage for results
+coverage_het = results_het = matrix(NA,n_rep,3)
+colnames(coverage_het) = colnames(results_het) = c("PL cf5","AIPW no","AIPW cf5")
+
+# start the simulation
+for (i in 1:n_rep) {
+  x = matrix(runif(n*p,-pi,pi),ncol=p)
+  w = rbinom(n,1,e(x[,1]))
+  y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+  
+  # partially linear model
+  pl = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+  results_het[i,1] = pl$result[1]
+  coverage_het[i,1] = (pl$result[1] - 1.96*pl$result[2] < 0 & pl$result[1] + 1.96*pl$result[2] > 0)
+  
+  # No cross-fitting
+  rf = regression_forest(x,w,honesty=F)
+  ehat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==0,],y[w==0],honesty=F)
+  m0hat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==1,],y[w==1],honesty=F)
+  m1hat = predict(rf,newdata=x)$predictions
+  pseudo_y =  m1hat - m0hat +
+    w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+  results_het[i,2] = mean(pseudo_y)
+  tt = t.test(pseudo_y)
+  coverage_het[i,2] = (tt$conf.int[1]  < 0 & tt$conf.int[2] > 0)
+  
+  aipw = DML_aipw(y,w,x,ml_y=list(forest),cf=5,
+                  e_mat = cbind(1-pl$e_hat,pl$e_hat),cf_mat = pl$cf_mat)
+  results_het[i,3] = aipw$ATE$results[1]
+  coverage_het[i,3] = (aipw$ATE$results[1] - 1.96*aipw$ATE$results[2] < 0 & aipw$ATE$results[1] + 1.96*aipw$ATE$results[2] > 0)
+}
+```
+
+We plot the estimator distributions and note that basically all estimators are unbiased:
+
+
+```{r}
+as.data.frame(results_het) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.5) + theme_bw() + geom_vline(xintercept=0)
+```
+
+This is confirmed by the decomposition of the MSE:
+
+```{r}
+data.frame(method = colnames(results_het),
+           bias2 = colMeans(results_het-0)^2,
+           var = colMeans(sweep(results_het,2,colMeans(results_het))^2)) %>% 
+  pivot_longer(-method,names_to = "Component",values_to = "MSE") %>%
+  ggplot(aes(fill=factor(Component,levels=c("var","bias2")), y=MSE, x=method)) + 
+  geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
+```
+
+Notably the partially linear estimator is unbiased although it assumes effect heterogeneity. However, it shows a higher variance than the AIPW estimator. This is expected because AIPW is an efficient estimator in the heterogeneous effects setting. But cross-fitting seems to be harmful as we have no bias and lower variance without all this additional effort.
+
+BUT, let's check the coverage rate:
+
+```{r}
+data.frame(method = colnames(results_het),
+           coverage = colMeans(coverage_het)) %>% 
+  ggplot(aes(y=coverage, x=method)) + geom_hline(yintercept=0.95,linetype="dashed") + 
+  geom_point(size=5,shape=4) + scale_fill_discrete(name = "Component") + ylim(c(0,1)) +
+  geom_hline(yintercept=c(0,1))
+```
+
+Cross-fitted AIPW shows nearly perfect coverage, while the standard errors without cross-fitting are much too small.
+
+$\Rightarrow$ Cross-fitting is not necessarily required to remove bias in the point estimates due to overfitting, but to remove downward bias in the standard errors. The true ATE is zero in our case, but we would find significant effects in about 20% of the cases instead of the 5% that we allow to happen given our confidence level. 
+
+<br>
+<br>
+
+
+
+# Effect heterogeneity with unbalanced treatment shares
+
+## DGP
+
+Now we introduce unbalanced treatment shares leaving the rest unchanged:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1-0.5))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The outcome model of the treated is $Y(1) = \underbrace{sin(X_1)}_{m_1(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The outcome model of the controls is $Y(0) = \underbrace{cos(X_1+1/2\pi)}_{m_0(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+We now expect roughly 1/3 treated and increase the sample size to 300 such that at least 100 observations are in each treatment arm:
+
+
+```{r}
+n = 300
+
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x)-0.5)}
+m1 = function(x){sin(x)}
+m0 = function(x){cos(x+1/2*pi)}
+tau = function(x){m1(x) - m0(x)}
+w = rbinom(n,1,e(x[,1]))
+y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+
+g1 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=e,size=1) + ylab("e") + xlab("X1")
+g2 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=m1,size=1,aes(colour="Y1")) + 
+  stat_function(fun=m0,size=1,aes(colour="Y0")) + ylab("Y") + xlab("X1")
+g3 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=tau,size=1) + ylab(expression(tau)) + xlab("X1")
+g1 / g2 / g3
+```
+
+<br>
+
+
+### Simulation study unbalanced treatment shares
+
+We run a simulation study drawing $M=1,000$ samples from the DGP described above and estimate the effect with three different estimators:
+
+- Partially linear model estimated with 5-fold cross-fitting
+
+- AIPW without cross-fitting
+
+- AIPW with 5-fold cross-fitting
+
+
+```{r}
+# initialize storage for results
+coverage_unbal = results_unbal = matrix(NA,n_rep,3)
+colnames(coverage_unbal) = colnames(results_unbal) = c("PL cf5","AIPW no","AIPW cf5")
+
+# start simulation
+for (i in 1:n_rep) {
+  x = matrix(runif(n*p,-pi,pi),ncol=p)
+  w = rbinom(n,1,e(x[,1]))
+  y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+  
+  # partially linear model
+  pl = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+  results_unbal[i,1] = pl$result[1]
+  coverage_unbal[i,1] = (pl$result[1] - 1.96*pl$result[2] < 0 & pl$result[1] + 1.96*pl$result[2] > 0)
+  
+  # No cross-fitting
+  rf = regression_forest(x,w,honesty=F)
+  ehat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==0,],y[w==0],honesty=F)
+  m0hat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x[w==1,],y[w==1],honesty=F)
+  m1hat = predict(rf,newdata=x)$predictions
+  pseudo_y =  m1hat - m0hat +
+    w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+  results_unbal[i,2] = mean(pseudo_y)
+  tt = t.test(pseudo_y)
+  coverage_unbal[i,2] = (tt$conf.int[1]  < 0 & tt$conf.int[2] > 0)
+  
+  # 5-fold cross-fitting with causalDML package reusing the folds and pscores of PL
+  aipw = DML_aipw(y,w,x,ml_y=list(forest),cf=5,
+                  e_mat = cbind(1-pl$e_hat,pl$e_hat),cf_mat = pl$cf_mat)
+  results_unbal[i,3] = aipw$ATE$results[1]
+  coverage_unbal[i,3] = (aipw$ATE$results[1] - 1.96*aipw$ATE$results[2] < 0 & aipw$ATE$results[1] + 1.96*aipw$ATE$results[2] > 0)
+}
+```
+
+We plot the estimator distributions:
+
+
+```{r}
+as.data.frame(results_unbal) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.5) + theme_bw() + geom_vline(xintercept=0)
+```
+
+BOOM!!! Maybe you thought that the effect homogeneity assumption imposed by the partially linear model was harmless given that it worked nicely above, but the 50-50 treatment share is just nice in this regard (see [Słoczyński (2020)](https://doi.org/10.1162/rest_a_00953) for a nice discussion in case of OLS). In the presence of heterogeneous effects, estimators assuming effect homogeneity estimate some causal effect, but not necessarily the ATE. The estimator distribution centers nicely around 0.5, while we know it should center around zero.
+
+This is confirmed by the decomposition of the MSE showing a huge bias:
+```{r}
+data.frame(method = colnames(results_unbal),
+           bias2 = colMeans(results_unbal-0,na.rm=T)^2,
+           var = colMeans(sweep(results_unbal,2,colMeans(results_unbal,na.rm=T))^2,na.rm=T)) %>% 
+  pivot_longer(-method,names_to = "Component",values_to = "MSE") %>%
+  ggplot(aes(fill=factor(Component,levels=c("var","bias2")), y=MSE, x=method)) + 
+  geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
+```
+
+This kills of course also the coverage rate:
+
+```{r}
+data.frame(method = colnames(results_unbal),
+           coverage = colMeans(coverage_unbal,na.rm=T)) %>% 
+  ggplot(aes(y=coverage, x=method)) + geom_hline(yintercept=0.95,linetype="dashed") + 
+  geom_point(size=5,shape=4) + scale_fill_discrete(name = "Component") + ylim(c(0,1)) +
+  geom_hline(yintercept=c(0,1))
+```
+
+$\Rightarrow$ We would reject the Null of $\tau_{ATE}=0$, which is true in our setting, in 80% of the cases if we imposed the assumption of effect homogeneity.
+
+<br>
+<br>
+
+
+
+# Take-away
+ 
+ - We can program a cross-fit Double ML AIPW estimator with few lines of code
+ 
+ - Cross-fitting makes a difference, especially when it comes to inference
+ 
+ - Estimators assuming effect homogeneity can dramatically break down in the presence of heterogeneity
+ 
+<br>
+<br>
+ 
+ 
+# Suggestions to play with the toy model
+
+The whole thing ran several hours on my laptop, so you should decrease *n_rep* for the first play and then run it over night with more.
+
+Some suggestions:
+ 
+- Let the treatment shares go e.g. from 10% to 90% in 10% steps and watch how you can basically get every effect you like with the partially linear model
+ 
+- Modify DGP (increase theta, correlation of covariates, coefficients, noise term, ...)
+
+- Increase the number of observations
+
+- Increase cross-fitting folds to 10 and/or 20
+
+ 
