@@ -1,0 +1,274 @@
+---
+title: "Causal ML: Double Selection"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Illustrate Double Selection
+
+<br>
+
+
+
+# Double Selection
+
+## Same coefficients for treatment and outcome
+
+Consider the following DGP:
+
+- $p=100$ covariates drawn from a multivariate normal distribution: $X \sim N(0,\Sigma)$, where $\Sigma$ is a matrix with entries $\Sigma_{kf}=0.7^{|j-k|}$
+
+- The treatment model is $W = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \epsilon$, where $X_j$ is the $j$-th column of $X$ and $\epsilon \sim N(0,1)$
+
+- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \varepsilon$, where $X_j$ is the $j$-th column of $X$ and $\varepsilon \sim N(0,4)$
+
+This means, we are in a sparse setting where the same few variables have the same impact on treatment and outcome, but the treatment is easier to estimate (lower noise).
+
+
+```{r, warning = F, message = F}
+library(hdm)
+library(mvtnorm)
+library(tidyverse)
+library(estimatr)
+
+set.seed(1234)
+
+n = 100
+p = 100
+
+n_rep = 1000
+
+# Define and plot parameters
+theta = 1
+delta = c(seq(1,0.1,-0.1),rep(0,p-10))
+pi = c(seq(1,0.1,-0.1),rep(0,p-10))
+cov_mat = toeplitz(0.7^(0:(p - 1)))
+plot(delta)
+abline(h = 0)
+plot(pi)
+abline(h = 0)
+```
+
+<br> 
+
+Now, we get a first draw and check which variables are selected when running Post-Lasso on the outcome...
+
+```{r}
+# Generate one draw
+x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
+w = x %*% delta + rnorm(n,0,1)
+y = theta*w + x %*% pi + rnorm(n,0,4)
+
+# Select variables in outcome regression
+sel_y = rlasso(x,y)
+# Which variables are selected?
+which(sel_y$beta != 0)
+```
+and run the single-selection OLS:
+
+```{r}
+# Run single-selection OLS
+x_sel_y = x[,sel_y$beta != 0]
+summary(lm_robust(y ~ w + x_sel_y))
+```
+
+Next, let's implement Double Selection manually by selecting also variables in the treatment regression...
+
+```{r}
+# Select variables in treatment regression
+sel_w = rlasso(x,w)
+which(sel_w$beta != 0)
+```
+
+and using the union in an OLS (Double Selection). Note that the treatment regression selected $X_8$, which was previously missed by the outcome regression. The final estimate, however, is only marginally affected in this draw (not a general result):
+
+```{r}
+# Double selection
+x_sel_union = x[,sel_y$beta != 0 | sel_w$beta != 0]
+summary(lm_robust(y ~ w + x_sel_union))
+```
+
+This is exactly the result that the `rlassoEffect` command of the `hdm` package would provide. The only difference being that it uses slightly different robust standard errors:
+
+```{r}
+ds = rlassoEffect(x,y,w)
+summary(ds)
+```
+
+Lets now repeatedly draw 1000 samples and check the distribution of the resulting coefficient for single and Double Selection:
+
+```{r}
+results = matrix(NA,n_rep,2)
+colnames(results) = c("Single","Double")
+
+for (i in 1:n_rep) {
+  x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
+  w = x %*% delta + rnorm(n,0,1)
+  y = theta*w + x %*% pi + rnorm(n,0,4)
+
+  sel_y = rlasso(x,y)
+  x_sel_y = x[,sel_y$beta != 0]
+  results[i,1] = lm(y ~ w + x_sel_y)$coefficients[2]
+  results[i,2] = rlassoEffect(x,y,w)$alpha
+}
+
+as.data.frame(results) %>% pivot_longer(cols=everything(),names_to = "Selection",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Selection)) + geom_density(alpha = 0.5) + geom_vline(xintercept = theta)
+```
+
+```{r}
+cat("Bias:\n")
+round(colMeans(results)-theta,4)
+
+cat("\nMSE:\n")
+round(colMeans((results-theta)^2),4)
+```
+
+The single selection algorithm is a little bit biased but the variance is smaller. This is reflected in the smaller MSE $\Rightarrow$ The unbiasedness of Double Selection comes at the cost of more variance. However, given that the same variables are important in both equations, the probability to miss a variables that is very important in the treatment equation is relatively small anyways. This is going to change in the next round.
+
+<br>
+
+
+## Asymmetric coefficients for treatment and outcome
+
+We keep everything the same but reverse the order of the non-zero coefficients in the treatment equation:
+
+- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+
+- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,4)$
+
+Now missing, e.g., $X_{10}$ because of its small coefficient in $Y$ should have more severe consequences.
+
+```{r}
+# Define and plot parameters
+delta = c(seq(0.1,1,0.1),rep(0,p-10))
+pi = c(seq(1,0.1,-0.1),rep(0,p-10))
+plot(delta)
+abline(h = 0)
+plot(pi)
+abline(h = 0)
+```
+
+
+```{r}
+results = matrix(NA,n_rep,2)
+colnames(results) = c("Single","Double")
+
+for (i in 1:n_rep) {
+  x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
+  w = x %*% delta + rnorm(n,0,1)
+  y = theta*w + x %*% pi + rnorm(n,0,4)
+
+  sel_y = rlasso(x,y)
+  x_sel_y = x[,sel_y$beta != 0]
+  results[i,1] = lm(y ~ w + x_sel_y)$coefficients[2]
+  results[i,2] = rlassoEffect(x,y,w)$alpha
+}
+
+as.data.frame(results) %>% pivot_longer(cols=everything(),names_to = "Selection",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Selection)) + geom_density(alpha = 0.5) + geom_vline(xintercept = theta)
+```
+
+```{r}
+cat("Bias:\n")
+round(colMeans(results)-theta,4)
+
+cat("\nMSE:\n")
+round(colMeans((results-theta)^2),4)
+```
+
+The bias of single selection is now more severe and visible. However, in terms of MSE it still performs better than Double Selection. Usually we are willing to accept such a loss in precision to get an unbiased estimate of the causal parameter of interest, so this is fine.
+
+
+<br>
+
+
+### Dense DGP
+
+We keep the above DGP but now all variables have at least some impact $\Rightarrow$ dense setting:
+
+- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+
+- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,4)$
+
+This is a setting where the approximate sparsity assumption is not be valid.
+
+```{r}
+# Define and plot parameters
+delta = c(seq(0.1,1,0.1),rep(0.1,p-10))
+pi = c(seq(1,0.1,-0.1),rep(0.1,p-10))
+plot(delta, ylim = c(0, 1))
+abline(h = 0)
+plot(pi, ylim = c(0, 1))
+abline(h = 0)
+```
+
+
+```{r}
+results = matrix(NA,n_rep,2)
+colnames(results) = c("Single","Double")
+
+for (i in 1:n_rep) {
+  x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
+  w = x %*% delta + rnorm(n,0,1)
+  y = theta*w + x %*% pi + rnorm(n,0,4)
+
+  sel_y = rlasso(x,y)
+  x_sel_y = x[,sel_y$beta != 0]
+  results[i,1] = lm(y ~ w + x_sel_y)$coefficients[2]
+  results[i,2] = rlassoEffect(x,y,w)$alpha
+}
+
+as.data.frame(results) %>% pivot_longer(cols=everything(),names_to = "Selection",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Selection)) + geom_density(alpha = 0.5) + geom_vline(xintercept = theta)
+```
+
+```{r}
+cat("Bias:\n")
+round(colMeans(results)-theta,4)
+
+cat("\nMSE:\n")
+round(colMeans((results-theta)^2),4)
+```
+
+Double Selection breaks down in the dense setting and becomes worse than single selection also in terms of bias.
+
+
+<br>
+<br>
+
+## Take-away
+ 
+ - Single selection produces biased estimates even in sparse settings.
+ 
+ - Double Selection successfully removes omitted variable bias by variables that would be missed by single selection.
+ 
+ - The price to pay is a higher variance compared to the single selection estimator.
+ 
+ - Double Selection blows up if the world is not sparse $\Rightarrow$ we have to "bet on sparsity", which is harder to swallow the smaller the sample size
+ 
+ 
+<br>
+<br>
+ 
+ 
+## Suggestions to play with the toy model
+
+Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modifications before you run it and check whether the results are in line with your expectation. Some suggestions:
+ 
+- Modify DGP (correlation of covariates, coefficients, noise term, ...)
+
+- Increase the number of observations
+
+- Implement variable selection mimicking what researchers might do (e.g. based on t-tests)
+
+ 

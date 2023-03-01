@@ -1,0 +1,298 @@
+---
+title: "Causal ML: Partially linear Double ML"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Hand-code partially linear Double ML
+
+<br>
+
+# Data generating process
+
+Consider the following DGP:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W = \underbrace{sin(X_1)}_{e(X)} + \epsilon$, with $\epsilon \sim N(0,1)$
+
+- The outcome model is $Y = \underbrace{0.1}_{\theta} W + \underbrace{sin(X_1)}_{m(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+This means that we are in a highly nonlinear setting, but only one variable ($X_1$) is relevant and the others are just noise. We draw a sample of $N=100$ and inspect it.
+
+
+```{r, warning = F, message = F}
+# To install the causalDML package uncomment the following two lines
+# library(devtools)
+# install_github(repo="MCKnaus/causalDML")
+
+library(hdm)
+library(grf)
+library(causalDML)
+library(tidyverse)
+library(patchwork)
+
+set.seed(1234)
+
+n = 100
+p = 10
+
+theta = 0.1
+
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){sin(x)}
+m = function(x){theta*e(x) + sin(x)}
+w = e(x[,1]) + rnorm(n,0,1)
+y = theta*w + sin(x[,1]) + rnorm(n,0,1)
+
+df = data.frame(x=x[,1],w,y)
+g1 = ggplot(df,aes(x=x, y=w)) + stat_function(fun=e,linewidth=1) + ylab("W and e(x)") + geom_point() + xlab("X1")
+g2 = ggplot(df,aes(x=x, y=y)) + stat_function(fun=m,linewidth=1) + ylab("Y and m(x)") + geom_point() + xlab("X1")
+g1 | g2
+```
+
+<br> 
+
+# Hand-coded residual-on-residual regression w/o cross-fitting
+
+We estimate the nuisance parameters $e(X)=E[W|X]$ and $m(X)=E[Y|X]$ using random forest without honesty (sample size too small for honesty) and use the respective residuals in a residual-on-residual regression (RORR) w/o constant:
+
+```{r}
+# No cross-fitting
+rf = regression_forest(x,w,honesty=F)
+ehat = predict(rf,newdata=x)$predictions
+# Predict outcome in-sample
+rf = regression_forest(x,y,honesty=F)
+mhat = predict(rf,newdata=x)$predictions
+# Get residuals
+res_y = y-mhat
+res_w = w-ehat
+# Run residual-on-residual regression (RORR)
+lm_robust(res_y ~ 0+res_w)$coefficients
+```
+
+Note that the ultimate hand-coded version uses the equation of the slides, which gives the equivalent estimate
+$$\hat{\theta} = \frac{\frac{1}{N}\sum_{i=1}^N (Y_i - \hat{m}(X_i)) (W_i - \hat{e}(X_i))}{\frac{1}{N}\sum_{i=1}^N (W_i - \hat{e}(X_i))^2}$$
+
+
+```{r}
+cat("Fully hand-coded:\n",mean(res_y * res_w) / mean(res_w^2))
+```
+
+
+<br>
+
+# Hand-coded residual-on-residual regression with 2-fold cross-fitting
+
+The theoretical results require that we predict the nuisance parameters out-of-sample. The easiest way to do this is via two-fold cross-fitting:
+
+- Split the sample in two random subsamples, S1 and S2
+
+- Form prediction models in S1, use it to predict in S2
+
+- Form prediction models in S2, use it to predict in S1
+
+- Run RORR with the combined predictions
+
+
+```{r}
+# Initialize nuisance vectors
+mhat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+# Create sample 2 with those not in S1
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1,honesty=F)
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1,y1,honesty=F)
+mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2,honesty=F)
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2,y2,honesty=F)
+mhat[index_s1] = predict(rf,newdata=x1)$predictions
+# RORR
+res_y = y-mhat
+res_w = w-ehat
+lm(res_y ~ 0+res_w)$coefficients
+```
+
+<br>
+
+
+# Residual-on-residual regression with 5-fold cross-fitting
+
+2-fold cross-fitting is easy to implement but especially in small sample sizes, using only 50% of the data to estimate the nuisance parameters might lead to unstable predictions.
+
+Thus, we use the `DML_partial_linear` function of the `causalDML` package to run 5-fold cross-fitting. This package requires to create the methods that we use because it allows for ensemble methods. For now, we focus again on the plain random forest.
+
+With 5-fold cross-fitting, we split the sample in 5 folds and use 4 folds (80% of the data) to predict the left out fold (20% of the data). We iterate such that every fold is left out once.
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(honesty=F))
+# Run partially linear model
+pl_cf5 = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(pl_cf5)
+```
+
+5-fold cross-fitting comes closest with this seed, but this could all be by chance.
+
+<br>
+
+
+# Simulation study
+
+We run a simulation study drawing $M=100$ samples from the DGP described above and estimate the effect with eight different estimators:
+
+- Double Selection with only the 10 main variables
+
+- Double Selection with the 10 main variables and their squared values
+
+- Double Selection including up to the third order polynomial of the main variables
+
+- Double Selection including up to the fourth order polynomial of the main variables
+
+- Double Selection including up to the fifth order polynomial of the main variables
+
+- Partially linear model estimated w/o cross-fitting
+
+- Partially linear model estimated with 2-fold cross-fitting
+
+- Partially linear model estimated with 5-fold cross-fitting
+
+
+
+```{r}
+# set number of replications
+n_rep = 100
+# Initialize results matrix
+results = matrix(NA,n_rep,8)
+colnames(results) = c("DS1","DS2","DS3","DS4","DS5","PL no cf","PL cf2","PL cf5")
+# run the simulation
+for (i in 1:n_rep) {
+  x = matrix(runif(n*p,-pi,pi),ncol=p)
+  w = e(x[,1]) + rnorm(n,0,1)
+  y = theta*w + sin(x[,1]) + rnorm(n,0,1)
+  
+  # double selections
+  results[i,1] = rlassoEffect(x,y,w)$alpha
+  x2 = cbind(x,x^2)
+  results[i,2] = rlassoEffect(x2,y,w)$alpha
+  x3 = cbind(x2,x^3)
+  results[i,3] = rlassoEffect(x3,y,w)$alpha
+  x4 = cbind(x3,x^4)
+  results[i,4] = rlassoEffect(x4,y,w)$alpha
+  x5 = cbind(x4,x^5)
+  results[i,5] = rlassoEffect(x5,y,w)$alpha
+  
+  
+  # No cross-fitting
+  rf = regression_forest(x,w,honesty=F)
+  ehat = predict(rf,newdata=x)$predictions
+  rf = regression_forest(x,y,honesty=F)
+  mhat = predict(rf,newdata=x)$predictions
+  res_y = y-mhat
+  res_w = w-ehat
+  results[i,6] = lm(res_y ~ 0+res_w)$coefficients
+  
+  # 2-fold cross-fitting
+  mhat = ehat = rep(NA,n)
+  index_s1 = sample(1:n,n/2)
+  x1 = x[index_s1,]
+  w1 = w[index_s1]
+  y1 = y[index_s1]
+  x2 = x[-index_s1,]
+  w2 = w[-index_s1]
+  y2 = y[-index_s1]
+  rf = regression_forest(x1,w1,honesty=F)
+  ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+  rf = regression_forest(x1,y1,honesty=F)
+  mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+  rf = regression_forest(x2,w2,honesty=F)
+  ehat[index_s1] = predict(rf,newdata=x1)$predictions
+  rf = regression_forest(x2,y2,honesty=F)
+  mhat[index_s1] = predict(rf,newdata=x1)$predictions
+  res_y = y-mhat
+  res_w = w-ehat
+  results[i,7] = lm(res_y ~ 0+res_w)$coefficients
+  
+  # 5-fold cross-fitting
+  results[i,8] = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)$result[1]
+}
+```
+
+We plot the histograms of Double Selection with fifth order polynomials (those with lower order look very similar), and the three partially linear estimators.
+
+
+```{r}
+as.data.frame(results[,c(5,6,7,8)]) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
+  ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.4) + theme_bw() + geom_vline(xintercept=theta)
+```
+
+
+The Double Selection estimator is clearly biased. Those based on the partially linear model also a little bit, but they are remarkably close given that we use only 100 observations.
+
+Lets have a closer look at the performance and check the MSE of the estimators and its decomposition, where $\hat{\theta}_m$ is the estimated parameter in the $m$-th replication:
+
+$$MSE(\hat{\theta)} = M^{-1} \sum_m (\hat{\theta}_m - \theta)^2 =  \underbrace{(\overbrace{M^{-1} \sum_m \hat{\theta}_m}^{\bar{\theta}} - \theta)^2}_{Bias^2} + \underbrace{M^{-1} \sum_m (\hat{\theta}_m - \bar{\theta})^2}_{Variance} $$
+
+```{r}
+data.frame(method = colnames(results),
+           bias2 = colMeans(results-theta)^2,
+           var = colMeans(sweep(results,2,colMeans(results))^2)) %>% 
+  pivot_longer(-method,names_to = "Component",values_to = "MSE") %>%
+  ggplot(aes(fill=factor(Component,levels=c("var","bias2")), y=MSE, x=method)) + 
+  geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
+```
+
+We observe that all Double Selection estimators are severely biased, while the bias of the partially linear estimators is negligible. 
+
+The worse performance of 2-fold cross-fitting should disappear with larger sample sizes. 
+
+In this setting cross-fitting seems not to be required. However, the next notebooks will look closer into this issue and show that it is especially important to get valid inference.
+
+
+<br>
+<br>
+
+## Take-away
+ 
+ - We can program a cross-fit Double ML partially linear estimator in less than 20 lines of code.
+ 
+ - Double Selection can fail in non-linear DGPs, even if provided with a lot of polynomials.
+ 
+ - In small samples, we should use more than two folds to exploit more information in forming the prediction models.
+ 
+<br>
+<br>
+ 
+ 
+## Suggestions to play with the toy model
+
+Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modification before you run it and check whether the results are in line with your expectation. Some suggestions:
+ 
+- Modify DGP (increase theta, correlation of covariates, coefficients, noise term, ...)
+
+- Increase the number of observations
+
+- Increase cross-fitting folds to 10 and/or 20
+
+ 

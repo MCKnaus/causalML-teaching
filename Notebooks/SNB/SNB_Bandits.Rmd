@@ -1,0 +1,302 @@
+---
+title: "Causal ML: Multi-armed bandit"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+<br>
+
+Goals:
+
+- Handcode UCB and Thompson sampling in stylized DGP
+
+<br>
+
+# Bandits
+
+## One step
+
+To illustrate bandits, we consider a very simple DGP:
+
+- $Y(0) \sim N(5,2^2)$
+
+- $Y(1) \sim N(5.5,2^2)$
+
+This means that the optimal policy rule assigns everybody to treatment one. Let's see how UCB and Thompson sampling figure this out on-the-fly. For a stream of 1000 observations.
+
+```{r, warning=F,message=F}
+library(tidyverse)
+
+set.seed(1234)
+
+# Define parameters
+mu0 = 5
+mu1 = 5.5
+sd0 = 2
+sd1 = 2
+n = 1000
+alpha = 2
+
+# Draw the potential outcomes of all individuals
+Y0 = rnorm(n,mu0,sd0)
+Y1 = rnorm(n,mu1,sd1)
+
+hist(Y0)
+hist(Y1)
+```
+
+As a kick-start, we assign the first four individuals "manually" to control/treatment/control/treatment:
+
+```{r}
+# Assign individual 1 to treatment zero
+W = 0
+# and observe the potential outcome under non-treatment
+Y = Y0[1]
+# Assign individual 2 to treatment one
+W = c(W,1)
+# and observe the potential outcome under treatment
+Y = c(Y,Y1[2])
+# Assign individual 3 to treatment zero
+W = c(W,0)
+# and observe the potential outcome under treatment
+Y = c(Y,Y0[3])
+# Assign individual 4 to treatment one
+W = c(W,1)
+# and observe the potential outcome under treatment
+Y = c(Y,Y1[4])
+
+# Print the realizes values
+W
+Y
+```
+
+Now calculate the means in each treatment arm:
+
+```{r}
+mu = c(mean(Y[W==0]), mean(Y[W==1]))
+mu
+```
+
+And the standard errors of the means:
+
+```{r}
+se = c(sd(Y[W==0]) / sqrt(sum(W==0)), 
+       sd(Y[W==1]) / sqrt(sum(W==1)))
+se
+```
+
+For $i=5$, we implement now explicitly UCB:
+
+```{r}
+# Calculate upper confidence bound
+upper_ci = mu + alpha * se
+upper_ci
+# Choose the treatment with the highest bound
+which.max(upper_ci)-1
+```
+
+and also Thompson sampling:
+
+```{r}
+# Thompson
+draws = c(rnorm(1,mu[1],alpha*se[1]),
+          rnorm(1,mu[2],alpha*se[2]))
+draws
+which.max(draws)-1
+```
+
+Note that with this very seed, UCB and Thomposon sampling do not take the same choice $\Rightarrow$ therandomness they induce is different.
+
+<br>
+
+## Dynamic treatment assignment (UCB)
+
+First, proceed with UCB and define a function that takes
+
+- observed outcomes
+
+- assigned treatments
+
+- and the tuning parameter $\alpha$ as arguments
+
+and returns a treatment assignment for the next individual:
+
+```{r}
+ucb = function(Y, W, alpha){
+  mu = c(mean(Y[W==0]), mean(Y[W==1]))
+  se = c(sd(Y[W==0]) / sqrt(sum(W==0)), sd(Y[W==1]) / sqrt(sum(W==1)))
+  assign = which.max(mu + alpha * se)
+  return(assign-1)
+}
+```
+
+Now we run UCB until individual $i=1000$:
+
+```{r}
+for (i in 5:n) {
+  # Assign individual 4 to treatment one
+  Wi = ucb(Y,W,alpha)
+  W = c(W,Wi)
+  # and observe the potential outcome under treatment
+  Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
+}
+```
+
+And plot the share of treated assigned to the optimal policy
+
+```{r}
+share = cumsum(W) / 1:n
+plot(1:n,share)
+```
+and the regret
+
+```{r}
+regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+plot(1:n,regret)
+```
+
+We observe that as observations flow in, UCB figures out that treatment one is dominant and starts to solely assign it. Such that at the end of the 1000 observations regret is negligible. Note that the regret of a 50:50 experiment would have been 0.25.
+
+<br>
+
+## Simulation study UCB
+
+We now run this 100 times each for a sequence of values of the tuning parameters `alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)`. We track the following quantities:
+
+- Average regret at $i=10$, $i=100$ and $i=1000$
+
+- Probability to assign the optimal treatment at $i=10$, $i=100$ and $i=1000$
+
+
+```{r}
+alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)
+
+reps = 1000 # Reduce to 100 if you have no time
+
+temp = matrix(NA,reps,6)
+results = matrix(NA,length(alpha),6)
+colnames(results) = c("regret10","regret100","regret1000","optimal10","optimal100","optimal1000")
+
+for (a in 1:length(alpha)) {
+  for (j in 1:reps) {
+    # Draw sample
+    Y0 = rnorm(n,mu0,sd0)
+    Y1 = rnorm(n,mu1,sd1)
+    
+    # Get kick-start
+    W = c(0,1,0,1)
+    Y = (1-W) * Y0[1:4] + W * Y1[1:4]
+    
+    # Run UCB
+    for (i in 5:n) {
+      # Assign individual 4 to treatment one
+      Wi = ucb(Y,W,alpha[a])
+      W = c(W,Wi)
+      # and observe the potential outcome under treatment
+      Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
+    }
+    regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+    temp[j,1] = regret[10]
+    temp[j,2] = regret[100]
+    temp[j,3] = regret[1000]
+    temp[j,4] = W[10]
+    temp[j,5] = W[100]
+    temp[j,6] = W[1000]
+  }
+ results[a,] = colMeans(temp)
+}
+
+as_tibble(cbind(alpha, results[,1:3])) %>% pivot_longer(!alpha,names_to = "individual", values_to = "regret") %>%
+  ggplot(aes(factor(alpha), regret, color=as.factor(individual))) +
+  geom_line(aes(group=factor(individual))) +
+  labs(x = "alpha", color = "Position") + theme_bw()
+
+as_tibble(cbind(alpha, results[,4:6])) %>% pivot_longer(!alpha,names_to = "individual", values_to = "optimal") %>%
+  ggplot(aes(factor(alpha), optimal, color=as.factor(individual))) +
+  geom_line(aes(group=factor(individual))) +
+  labs(x = "alpha", y = "Prob of optimal choice", color = "Position") + theme_bw()
+```
+
+We observe that a value of $\alpha = 3$ minimizes regret in the long run and maximizes the probability to assign the best treatment to individual 1000. Very low values of $\alpha$ result in too little exploration. This means the bandit might commit early on to the wrong treatment. On the other hand, very high values of $\alpha$ explore too much. $\alpha = 1000$ is a very extreme case, which is nearly equivalent to running a 50:50 experiment. The bandit ignores basically any knowledge about the better treatment.
+
+<br>
+
+## Simulation study Thompson sampling
+
+First, write a function similar to the `ucb` function that implements Thompson sampling:
+
+```{r}
+thompson = function(Y, W, alpha){
+  mu = c(mean(Y[W==0]), mean(Y[W==1]))
+  se = c(sd(Y[W==0]) / sqrt(sum(W==0)), sd(Y[W==1]) / sqrt(sum(W==1)))
+  draws = c(rnorm(1, mu[1], alpha * se[1]),
+          rnorm(1, mu[2], alpha * se[2]))
+  assign = which.max(draws)
+  return(assign-1)
+}
+```
+
+and use it in the same loop as before:
+
+```{r}
+alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)
+
+reps = 1000 # Reduce to 100 if you have no time
+
+temp = matrix(NA,reps,6)
+results = matrix(NA,length(alpha),6)
+colnames(results) = c("regret10","regret100","regret1000","optimal10","optimal100","optimal1000")
+
+for (a in 1:length(alpha)) {
+  for (j in 1:reps) {
+    # Draw sample
+    Y0 = rnorm(n,mu0,sd0)
+    Y1 = rnorm(n,mu1,sd1)
+    
+    # Get kick-start
+    W = c(0,1,0,1)
+    Y = (1-W) * Y0[1:4] + W * Y1[1:4]
+    
+    # Run UCB
+    for (i in 5:n) {
+      # Assign individual 4 to treatment one
+      Wi = thompson(Y,W,alpha[a])
+      W = c(W,Wi)
+      # and observe the potential outcome under treatment
+      Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
+    }
+    regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+    temp[j,1] = regret[10]
+    temp[j,2] = regret[100]
+    temp[j,3] = regret[1000]
+    temp[j,4] = W[10]
+    temp[j,5] = W[100]
+    temp[j,6] = W[1000]
+  }
+ results[a,] = colMeans(temp)
+}
+
+as_tibble(cbind(alpha, results[,1:3])) %>% pivot_longer(!alpha,names_to = "individual", values_to = "regret") %>%
+  ggplot(aes(factor(alpha), regret, color=as.factor(individual))) +
+  geom_line(aes(group=factor(individual))) +
+  labs(x = "alpha", color = "Position") + theme_bw()
+
+as_tibble(cbind(alpha, results[,4:6])) %>% pivot_longer(!alpha,names_to = "individual", values_to = "optimal") %>%
+  ggplot(aes(factor(alpha), optimal, color=as.factor(individual))) +
+  geom_line(aes(group=factor(individual))) +
+  labs(x = "alpha", y = "Prob of optimal choice", color = "Position") + theme_bw()
+```
+
+We see the same exploration vs. exploitation trade-off as for UCB. However, the optimal $\alpha = 1$ and Thompson sampling manages to realize a smaller average regret of around 0.05, while UCB had only 0.07, at least with this very coarse grid.
+
+<br>
+
+## Potential extensions
+
+- Change the mean and/or variance of the treatment and control group. First think about what you expect and then test your intuition by running the modified notebook.

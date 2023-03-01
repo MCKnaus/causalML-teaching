@@ -1,0 +1,382 @@
+---
+title: "Causal ML: Group Average Treatment Effects"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Handcode DR-learner for GATE estimation with OLS, Kernel and Series regression
+
+<br>
+
+
+
+# Linear heterogeneity
+
+## DGP
+
+Consider the following DGP with linear heterogeneous treatment effects:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The potential outcome model of the controls is $Y(0) = \underbrace{sin(X_1)}_{m_0(X)} + \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The CATE function is a linear function of the first three covariates $\tau(X) = \underbrace{0.3}_{\rho_1} X_1 + \underbrace{0.2}_{\rho_2} X_2 + \underbrace{0.1}_{\rho_3} X_3$
+
+- The potential outcome model of the treated is $Y(1) = m_0(X) + \tau(X) + \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+This leads to substantial effect heterogeneity driven by the first three covariates: 
+
+
+```{r, warning = F, message = F}
+library(grf)
+library(causalDML)
+library(tidyverse)
+library(patchwork)
+library(estimatr)
+library(np)
+library(crs)
+
+set.seed(1234)
+
+# Set parameters
+n = 1000
+p = 10
+
+rho = c(0.3,0.2,0.1,rep(0,7))
+
+# Draw sample
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m0 = function(x){sin(x)}
+tau = x %*% rho
+w = rbinom(n,1,e(x[,1]))
+y = m0(x[,1]) + w*tau + rnorm(n,0,1)
+hist(tau)
+```
+
+<br> 
+
+## GATE estimation with OLS
+
+### Hand-coded 2-fold cross-fitting
+
+Consider that we are interested in the heterogeneity with respect to the first five covariates, $X_1$ to $X_5$.
+
+We draw a sample of $N=1000$ and estimate the nuisance parameters $e(X)=E[W|X]$, $m(0,X)=E[Y|W=0,X]$ and $m(1,X)=E[Y|W=1,X]$ using honest random forest with self-tuned tuning parameters and all ten covariates. 
+
+We first handcode 2-fold cross-validation and plug the resulting nuisance parameters into the pseudo outcome
+$$\tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}}$$
+
+```{r}
+# 2-fold cross-fitting
+m0hat = m1hat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+# Create sample 2 with those not in S1
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1,tune.parameters = "all")
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==0,],y1[w1==0],tune.parameters = "all")
+m0hat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==1,],y1[w1==1],tune.parameters = "all")
+m1hat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2,tune.parameters = "all")
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==0,],y2[w2==0],tune.parameters = "all")
+m0hat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==1,],y2[w2==1],tune.parameters = "all")
+m1hat[index_s1] = predict(rf,newdata=x1)$predictions
+# Generate pseudo-outcome
+pseudo_y =  m1hat - m0hat +
+  w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+```
+
+We know that the unconditional mean of the pseudo-outcome estimates the ATE. Now, we use it as pseudo-outcome in a multivariate regression using the five heterogeneity variables as covariates:
+
+
+```{r}
+lm_fit2 = lm_robust(pseudo_y~x[,1:5])
+summary(lm_fit2)
+se2 = lm_fit2$std.error
+data.frame(Variable = c("Constant",paste0("X",1:5)),
+           Coefficient = lm_fit2$coefficients,
+           cil = lm_fit2$coefficients - 1.96*se2,
+           ciu = lm_fit2$coefficients + 1.96*se2,
+           truth = c(0,rho[1:5])) %>% 
+  ggplot(aes(x=Variable,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(linewidth=2.5,aes(colour="Estimate",shape="Estimate")) + geom_errorbar(width=0.15)  +
+  geom_hline(yintercept=0) + geom_point(aes(x=Variable,y=truth,colour="Truth",shape="Truth"),linewidth=2.5) +
+  scale_colour_manual(name="Legend", values = c("black","blue")) + 
+  scale_shape_manual(name="Legend",values = c(19,8))
+```
+
+The estimated coefficients are close to the true ones and the true coefficients are covered by the respective 95% confidence intervals.
+
+Thus, it is also not surprising that the correlation of the resulting fitted values with the true CATE is obvious and strong:
+
+```{r}
+plot(tau,lm_fit2$fitted.values)
+```
+
+
+<br>
+
+### 5-fold cross-fitting with `causalDML` package
+
+Next we consider 5-fold cross-fitting using the `causalDML` package. This requires to first estimate the standard average effects:
+
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# Run
+aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(aipw$APO)
+summary(aipw$ATE)
+```
+
+It stores the pseudo-outcome in the created object (`object\$ATE\$delta`) such that we can use it in the next step without rerunning the ML steps again:
+
+
+```{r}
+lm_fit5 = lm_robust(aipw$ATE$delta~x[,1:5])
+summary(lm_fit5)
+se5 = lm_fit5$std.error
+data.frame(Variable = c("Constant",paste0("X",1:5)),
+           Coefficient = lm_fit5$coefficients,
+           cil = lm_fit5$coefficients - 1.96*se5,
+           ciu = lm_fit5$coefficients + 1.96*se5,
+           truth = c(0,rho[1:5])) %>% 
+  ggplot(aes(x=Variable,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(linewidth=2.5,aes(colour="Estimate",shape="Estimate")) + geom_errorbar(width=0.15)  +
+  geom_hline(yintercept=0) + geom_point(aes(x=Variable,y=truth,colour="Truth",shape="Truth"),linewidth=2.5) +
+  scale_colour_manual(name="Legend", values = c("black","blue")) + 
+  scale_shape_manual(name="Legend",values = c(19,8))
+```
+
+
+Again the predicted CATEs and the true ones are highly correlated:
+
+```{r}
+plot(tau,lm_fit5$fitted.values)
+```
+
+
+*Remark:* This procedure would estimate the Best Linear Predictor of the CATE with respect to the five variables in the (likely) case that the underlying CATE function is not really linear.
+<br>
+<br>
+<br>
+<br>
+
+# Non-parametric heterogeneity
+
+Now we revisit the second DGP of notebook *SNB_AIPW_DML* with zero ATE but highly nonlinear effect heterogeneity:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The outcome model of the controls is $Y(0) = \underbrace{cos(X_1+1/2\pi)}_{m_0(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The outcome model of the treated is $Y(1) = \underbrace{sin(X_1)}_{m_1(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The treatment effect function is $\tau(X) = sin(X_1) - cos(X_1+1/2\pi)$
+
+
+```{r}
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m1 = function(x){sin(x)}
+m0 = function(x){cos(x+1/2*pi)}
+tau = function(x){m1(x) - m0(x)}
+w = rbinom(n,1,e(x[,1]))
+y = w*m1(x[,1]) + (1-w)*m0(x[,1]) + rnorm(n,0,1)
+
+g1 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=e,linewidth=1) + ylab("e") + xlab("X1")
+g2 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=m1,linewidth=1,aes(colour="Y1")) + 
+  stat_function(fun=m0,linewidth=1,aes(colour="Y0")) + ylab("Y") + xlab("X1")
+g3 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=tau,linewidth=1) + ylab(expression(tau)) + xlab("X1")
+g1 / g2 / g3
+```
+
+<br> 
+
+## GATE estimation with kernel regression
+
+### Hand-coded 2-fold cross-fitting
+
+Consider we are interested in the heterogeneity with respect to the first covariate $X_1$.
+
+We draw a sample of $N=1000$ and estimate the nuisance parameters $e(X)=E[W|X]$, $m(0,X)=E[Y|W=0,X]$ and $m(1,X)=E[Y|W=1,X]$ using honest random forest with self-tuned tuning parameters and all ten covariates. 
+
+We first handcode 2-fold cross-validation and plug the resulting nuisance parameters into the pseudo outcome:
+
+```{r}
+m0hat = m1hat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+# Create sample 2 with those not in S1
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1,tune.parameters = "all")
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==0,],y1[w1==0],tune.parameters = "all")
+m0hat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1[w1==1,],y1[w1==1],tune.parameters = "all")
+m1hat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2,tune.parameters = "all")
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==0,],y2[w2==0],tune.parameters = "all")
+m0hat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2[w2==1,],y2[w2==1],tune.parameters = "all")
+m1hat[index_s1] = predict(rf,newdata=x1)$predictions
+# generate pseudo-outcome
+pseudo_y =  m1hat - m0hat +
+  w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
+```
+
+Now we use the pseudo-outcome in a kernel regression with the only covariate being $X_1$. We cross-validate the bandwidth of the kernel regression, run the estimation with the *np* package and plot the estimated curve:
+
+```{r, results='hide'}
+z = as.data.frame(x[,1])
+# Crossvalidate bandwidth
+bwobj = npregbw(ydat = pseudo_y, xdat = z, ckertype = 'gaussian', ckerorder = 2, regtype = 'lc', bwmethod = 'cv.ls')
+bws = bwobj$bw
+# Undersmoothing, i.e. chose a slightly smaller bandwidth than was cross-validated
+bw = bwobj$bw * 0.9
+cate_model = npreg(tydat = pseudo_y, txdat = z, bws=bw, ckertype = 'gaussian', ckerorder = 2, regtype = 'lc')
+
+plot(cate_model)
+```
+
+This looks very similar to the true function.
+
+
+<br>
+
+### 5-fold cross-fitting with `causalDML` package
+
+Next we consider 5-fold cross-fitting using the `causalDML` package. This requires to first estimate the standard average effects:
+
+
+```{r}
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# Run
+aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+summary(aipw$APO)
+summary(aipw$ATE)
+```
+
+It stores the pseudo-outcome in the created object (`object\$ATE\$delta`) such that we can use it in the next step without rerunning the ML steps again. The full procedure is implemented in the `kr_cate` function:
+
+```{r, results='hide'}
+kernel_reg_x1 = kr_cate(aipw$ATE$delta,x[, 1])
+
+plot(kernel_reg_x1)
+```
+
+We observe that the estimated curve fits quite nicely and the x-axis is included in the 95% confidence intervals where it should be $\Rightarrow$ We find what we should find.
+
+Finally, lets check whether we find something that is not there by checking heterogeneity with respect to $X_2$.
+
+```{r, results='hide'}
+kernel_reg_x2 = kr_cate(aipw$ATE$delta,x[, 2])
+plot(kernel_reg_x2)
+```
+
+We find no evidence of heterogeneous effects along $X_2$, as we should.
+
+<br>
+<br>
+
+
+## GATE estimation with series regression
+
+### Hand-coded 2-fold cross-fitting
+
+Consider again that we are interested in the heterogeneity with respect to the first covariate $X_1$. We reuse first the handcoded 2-fold cross-fitted pseudo outcome in a series regression with B-splines using `crs` package
+
+```{r, results='hide'}
+spline_gate = crs(pseudo_y ~ as.matrix(z))
+
+plot(spline_gate,mean=T)
+```
+
+Also the spline function nicely approximates the true function.
+
+
+<br>
+
+### 5-fold cross-fitting with *causalDML* package
+
+Again, we can reuse the pseudo-outcome (`object\$ATE\$delta`) and use the `spline_cate` function of the `causalDML` package:
+
+```{r, results='hide'}
+spline_reg_x1 = spline_cate(aipw$ATE$delta,x[, 1])
+plot(spline_reg_x1)
+```
+
+Again this looks like the true function. Most importantly, the x-axis is included in the 95% confidence intervals where it should be $\Rightarrow$ We find what we should find.
+
+Finally, lets check whether we find something that is not there by checking heterogeneity with respect to $X_2$.
+
+```{r, results='hide'}
+spline_reg_x2 = spline_cate(aipw$ATE$delta,x[, 2])
+plot(spline_reg_x2)
+```
+
+We find no evidence of heterogeneous effects along $X_2$, as we should.
+
+<br>
+<br>
+
+
+
+## Take-away
+ 
+ - Estimating heterogeneous effects with pre-specified heterogeneity variables is just a few lines of additional code reusing the pseudo-outcome from the average effect estimation
+ 
+ - We can model effect sizes as we are used to modeling outcome levels by using the right pseudo-outcome
+ 
+<br>
+<br>
+ 
+ 
+## Suggestions to play with the toy model
+
+Some suggestions:
+ 
+- Increase/decrease the number of observations
+
+- Create a non-linear CATE in the first part
+
+- Change the treatment shares
+
+ 

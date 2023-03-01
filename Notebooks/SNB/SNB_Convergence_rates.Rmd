@@ -1,0 +1,489 @@
+---
+title: "Basics: Convergence rates"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Illustrate convergence rates
+
+- Illustrate the difference between convergence of coefficients and convergence of root mean squared error
+
+- Illustrate the differences between OLS and kernel regression
+
+
+<br>
+
+# Linear model
+
+We start in a world where the conditional expectation function (CEF) is actually linear and OLS should converge at $\sqrt{N}$.
+
+## Data generating process
+
+Consider a data generating process (DGP) with: 
+
+$Y = \underbrace{\beta_0 + \beta_1 X}_{CEF} + U$, where $\beta_0 = -1$, $\beta_1 = 2$, $X \sim uniform(0,1)$ and $U \sim uniform(-1,1)$.
+
+For illustration, we plot a random draw with $N=500$ and the true CEF:
+
+```{r message=FALSE, warning = F}
+# Load the packages required for later
+library(tidyverse)
+library(ggridges)
+library(latex2exp)
+library(np)
+
+set.seed(1234)  # For replicability
+n = 500         # Sample size for illustration
+
+x = runif(n)    # Draw covariate
+
+# Define population parameters
+b0 = -1
+b1 = 2
+
+# Define conditional expectation function
+cef = function(x){b0 + b1*x}
+
+# Generate outcome variable
+y = cef(x) + runif(n,-1,1)
+
+# Plot sample
+df = data.frame(x=x,y=y)
+ggplot(df) + stat_function(fun=cef,size=1) + 
+            geom_point(aes(x=x,y=y),color="blue",alpha = 0.4)
+```
+
+Applying OLS to the plotted sample shows that it nearly recovers the true coefficients, but not exactly due to sampling noise (as expected).
+
+```{r}
+summary(lm(y~ x))
+```
+
+<br>
+<br>
+
+## Convergence rate of OLS - coefficients
+
+We know that $$\sqrt{N}(\hat{\beta}_N - \beta) \overset{d}{\rightarrow} \mathcal{N}(0,\Sigma)$$ 
+
+This means that the difference between the estimated coefficients and the true values is normally distributed **with constant variance** if we multiply it by $\sqrt{N}$.
+
+<br>
+
+Let's unpack this in the following way:
+
+1. Look at an example distribution of $\hat{\beta}_N$
+
+2. Look at an example distribution of $\hat{\beta}_N - \beta$
+
+3. Look at an example distribution of $\sqrt{N}(\hat{\beta}_N - \beta)$
+
+<br>
+
+
+The tool we use is a so-called Monte Carlo simulation study. Concretely, we follow these steps:
+
+1. Draw a random sample from the DGP defined above of size $N$.
+
+2. Run OLS and save the coefficients.
+
+3. Repeat 1. and 2. $R$ times.
+
+4. Repeat 1. to 3. for a sequence of sample sizes $N$ that increase by the factor four in each step.
+
+<br>
+
+We start with $N=10$, look at five sample sizes, set $R=10,000$ and focus on $\beta_1$.
+
+```{r}
+# Define parameters of the simulation
+r = 10000
+seq = 5
+start = 10
+
+# Initialize empty matrix to fill in estimated coefficient b1
+results = matrix(NA,r,seq+1)
+colnames(results) = rep("Temp",seq+1) # To be automatically replaced in loop below
+
+
+for (i in 0:seq) { # Outer loop over sample sizes 
+  n = 4^i * start # sample size for this loop
+  colnames(results)[i+1] = paste0("n=",toString(n)) # save sample size
+  for (j in 1:r) { # Inner loop over replications
+    # Draw sample
+    x = runif(n)
+    y = cef(x) + runif(n,-1,1)
+    # Estimate and directly save b1 coefficient
+    results[j,i+1] = lm(y ~ x)$coefficients[2]
+  }
+}
+```
+
+<br>
+
+### $\hat{\beta}_N$
+
+Now let's plot the distributions of the resulting coefficients for different sample sizes:
+
+
+```{r}
+# Get the data ready
+tib = as_tibble(results) %>% pivot_longer(cols = starts_with("n="), names_to = "N", names_prefix = "n=", values_to = "betas1") %>% mutate(N = as_factor(N))
+# Plot
+tib %>% ggplot(aes(x = betas1, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") + xlab(TeX(r'($\hat{\beta}_1$)'))
+
+```
+
+This picture provides intuition about two crucial concepts:
+
+1. **Unbiasedness:** The estimator distribution is centered around the true value $\Rightarrow E[\hat{\beta}_{1N}] = \beta_1$ for every sample size (each row in the graph).
+
+2. **Consistency:** The distributions center more and more around the true value as sample size increases.
+
+<br>
+
+### $\hat{\beta}_N - \beta$
+
+Now we center the distributions around zero:
+
+```{r}
+tib %>% mutate(dev = betas1 - b1) %>% ggplot(aes(x = dev, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") + 
+    xlab(TeX(r'($\hat{\beta}_1 - \beta_1$)'))
+```
+
+Of course, this does not change the pattern that the distributions become more compact with larger sample size.
+
+<br>
+
+### $\sqrt{N}(\hat{\beta}_N - \beta)$
+
+However, if we multiply each distribution with the square root of the respective sample size, tadaaa
+
+```{r, message = FALSE}
+tib %>% mutate(sqrtn_dev = sqrt(as.numeric(as.character(N))) * (betas1 - b1)) %>% 
+  ggplot(aes(x = sqrtn_dev, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") +
+   xlab(TeX(r'($\sqrt{N}(\hat{\beta}_1 - \beta_1)$)'))
+```
+
+they become very similar looking normal distributions.
+
+This means $\sqrt{N}$ is exactly the factor that offsets the speed by which the distributions above become more compact. We can infer that the distributions converge to zero at the rate that is required to offset convergence.
+
+To illustrate further, vary `delta` in the following code snippet and observe how the distributions still narrow if it is smaller than 0.5 like, e.g. with 0.3 ...
+
+```{r, message = FALSE}
+delta = 0.3
+  tib %>% mutate(dev = (as.numeric(as.character(N)))^delta * (betas1 - b1)) %>% 
+    ggplot(aes(x = dev, y = fct_rev(N), fill = N)) +
+    geom_density_ridges() + ylab("N") + 
+    xlab(TeX(r'($N^{\delta}(\hat{\beta}_1 - \beta_1)$)'))
+```
+
+... and that the distributions explode if we set it larger than 0.5, e.g. 0.7:
+
+```{r, message = FALSE}
+delta = 0.7
+  tib %>% mutate(dev = (as.numeric(as.character(N)))^delta * (betas1 - b1)) %>% 
+    ggplot(aes(x = dev, y = fct_rev(N), fill = N)) +
+    geom_density_ridges() + ylab("N") +
+    xlab(TeX(r'($N^{\delta}(\hat{\beta}_1 - \beta_1)$)'))
+```
+
+<br>
+
+Another illustration, how the distribution of the deviations is stabilized by multiplying with $\sqrt{N}$, shows the standard deviation of $N^\delta(\hat{\beta_1} - \beta_1)$ which is $\sqrt{Var(N^\delta(\hat{\beta_1} - \beta_1))} = \sqrt{N^{2\delta} \cdot Var(\hat{\beta_1} - \beta_1)} = N^\delta \cdot sd(\hat{\beta_1} - \beta_1)$. The following graph shows how $N^\delta \cdot sd(\hat{\beta_1} - \beta_1)$ evolves for different $\delta$ with increasing $N$:
+
+```{r}
+new_tib = tib %>% mutate(dev = betas1 - b1, N = as.numeric(as.character(N)))  %>% group_by(N) %>% summarise(sd_dev = sqrt(var(dev))) 
+
+delta_seq = c(0,0.3,0.4,0.5,0.55,0.6)
+new_tib = cbind(as.matrix(new_tib), matrix(NA,nrow = dim(as.matrix(new_tib))[1],ncol =  length(delta_seq)))
+colnames(new_tib) = c("N", "sd", rep("Temp",length(delta_seq)))
+
+for (i in 1:length(delta_seq)) {
+  delta = delta_seq[i]
+  colnames(new_tib)[i+2] = paste0("d=",toString(delta))
+  new_tib[,i+2] = new_tib[,1]^(delta) * new_tib[,2]
+}
+
+new_tib = as_tibble(new_tib) %>% pivot_longer(cols = starts_with("d="), names_to = "delta", names_prefix = "d=", values_to = "value") %>% mutate(delta = as_factor(delta))
+
+new_tib %>% ggplot(aes(x = N, y = value, color = delta))+
+  geom_line(aes(size = delta)) + scale_size_manual(values = c(0.5,0.5, 0.5, 2,0.5,0.5))
+
+```
+With $\delta = 0$, it can be seen that the standard deviation of $\hat{\beta_1} - \beta_1$ goes to zero. When multiplying the deviations with $N^\delta, \delta<0.5$, the standard deviations of the product still go to zero. Only when when multiplying by $N^{0.5}$ (thick), the standard deviation remains constant across different sample sizes. The distribution is in this case stabilized. Multiplication by $N^\delta, \delta>0.5$ makes the standard deviation of the product increase with increasing sample size. The distribution becomes wider, as in the figure above.
+<br>
+
+### $N(\hat{\beta}_1 - \beta_1)^2$
+
+Note similarly that $N$ stabilizes the distribution of the squared difference
+
+```{r}
+tib %>% mutate(sqrtn_dev = as.numeric(as.character(N)) * (betas1 - b1)^2) %>% 
+  ggplot(aes(x = sqrtn_dev, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") +
+   xlab(TeX(r'($N(\hat{\beta}_1 - \beta_1)^2$)'))
+```
+
+<br>
+
+### $\sqrt{N(\hat{\beta}_1 - \beta_1)^2}$
+
+... and $\sqrt N$ stabilizes the distribution of the square root of the squared difference:
+
+```{r}
+tib %>% mutate(sqrtn_dev = sqrt( as.numeric(as.character(N)) * (betas1 - b1)^2) ) %>% 
+  ggplot(aes(x = sqrtn_dev, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") +
+   xlab(TeX(r'($\sqrt{N(\hat{\beta}_1 - \beta_1)^2}$)'))
+
+```
+
+<br>
+
+
+## Convergence rate of OLS - fitted/predicted values
+
+In this course, it will be important how fast fitted/predicted values of a method converge to the true CEF, not how fast a single coefficient converges.
+
+Therefore note that $\sqrt{N}$ convergence in the parameters implies $\sqrt{N}$ of the root mean squared error (RMSE) $$RMSE = \sqrt{\frac{1}{N}\sum_i(X_i'\hat{\beta}_N - X_i'\beta)^2}$$
+
+To illustrate this, we repeat the simulation above, but instead of saving the coefficient, we save the RMSE of each run.
+
+
+```{r}
+# Initialize empty matrix to fill in RMSE
+results = matrix(NA,r,seq+1)
+colnames(results) = rep("Temp",seq+1) # To be automatically replaced in loop below
+
+for (i in 0:seq) { # Outer loop over sample sizes 
+  n = 4^i * start # sample size for this loop
+  colnames(results)[i+1] = paste0("n=",toString(n)) # save sample size
+  for (j in 1:r) { # Inner loop over replications
+    # Draw sample
+    x = runif(n)
+    y = cef(x) + runif(n,-1,1)
+    # Save RMSE of this replication
+    results[j,i+1] = sqrt( mean( (lm(y ~ x)$fitted.values - cef(x))^2 ) )
+  }
+}
+```
+
+Plot the RMSE for different sample sizes:
+
+```{r}
+tib = as_tibble(results) %>% pivot_longer(cols = starts_with("n="), names_to = "N", names_prefix = "n=", values_to = "rmse") %>% mutate(N = as_factor(N))
+tib %>% ggplot(aes(x = rmse, y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") + xlab("RMSE")
+```
+
+The distributions of RMSE come closer to zero, the larger the sample size.
+
+To see that the distributions converge at rate $\sqrt{N}$, we blow up the distributions once more and see that they stabilize when doing so:
+
+```{r}
+tib %>% ggplot(aes(x = sqrt( as.numeric(as.character(N)) ) * rmse , y = fct_rev(N), fill = N)) +
+  geom_density_ridges() + ylab("N") + xlab("RMSE")
+```
+
+<br>
+
+The (for me) most intuitive implication of $\sqrt{N}$ convergence is that the RMSE halves when we quadruple the sample size.
+
+Check the means of the RMSE distributions
+
+```{r}
+mrmse = round(colMeans(results),3)
+mrmse
+```
+
+and realize that they indeed nearly perfectly halve:
+
+```{r}
+round(mrmse/lag(mrmse),3)
+```
+ 
+<br>
+<br>
+
+*Ideas for DIY extensions:*
+
+- Use different sequences of $N$.
+
+- Check also $\beta_0$.
+
+- Illustrate that the mean squared error (MSE) converges at rate $N$
+
+- Adapt the DGP, e.g. different parameter values, more than one covariate, different error term distribution,...
+
+- (advanced) Check joint distribution of $\beta_0$ and $\beta_1$.
+
+
+<br>
+<br>
+
+## Kernel regression convergence rates
+
+Recall that we specified a linear CEF and therefore OLS is supposed to work very well. However, we could also use nonparametric methods that do not assume linearity. They differ from OLS is several ways:
+
+- They do not estimate global parameters. Convergence in terms of $\beta$s can therefore not be investigated.
+
+- They converge slower than $\sqrt{N}$ because they do not work under the assumption that the world is linear and need to figure this out on there own.
+
+- They are computationally more expensive. We can not run so many replications and sample sizes as with OLS
+
+We run the same simulation study as above, but using kernel regression with cross-validated bandwidth, which should converge at $N^{2/5}$. We print the plot of the first replication of a sample size to illustrate the fit.
+
+
+```{r, results='hide'}
+# Set simulation parameters
+r = 1000 # Decrease for faster running time
+seq = 4
+
+# Initialize empty matrix to fill in RMSE
+results = matrix(NA,r,seq+1)
+colnames(results) = rep("Temp",seq+1) # To be automatically replaced in loop below
+
+for (i in 0:seq) { # Outer loop over sample sizes 
+  n = 4^i * start # sample size for this loop
+  colnames(results)[i+1] = paste0("n=",toString(n)) # save sample size
+  for (j in 1:r) { # Inner loop over replications
+    # Draw sample    
+    x = runif(n)
+    y = cef(x) + runif(n,-1,1)
+    
+    # Cross-validate bandwidth, but only once for computational reasons
+    if(j==1) bwobj = npregbw(ydat = y, xdat = x,  regtype = 'lc', bwmethod = 'cv.ls')
+    # Run Kernel regression
+    model = npreg(tydat = y, txdat = x, bws=bwobj$bw, regtype = 'lc')
+    if(j==1) plot(model, main = paste0("N=",toString(n)))
+    results[j,i+1] = sqrt( mean( (fitted(model) - cef(x))^2 ) )
+  }
+}
+```
+
+The RMSE of kernel regression descreases also with higher $N$
+
+```{r}
+mrmse = round(colMeans(results),3)
+mrmse
+```
+
+BUT at a slower rate (as expected)
+ 
+```{r}
+round(mrmse/lag(mrmse),3)
+```
+
+
+Note that the theoretical decrease for quadrupling sample size is
+```{r}
+n^(2/5) / (4*n)^(2/5)
+```
+
+which is roughly what we observe (the more replications you can computationally afford, the closer it should get).
+
+<br>
+<br>
+
+# Non-linear world
+
+So far, we created a world where OLS shines and shows (the best possible) $\sqrt{N}$ convergence of coefficients and RMSE.
+
+BUT why should the world be linear? To make the point, let's push it and assume the following definitely non linear DGP: $Y = \underbrace{sin(X)}_{CEF} + U$, where 
+$X \sim uniform(-1.43 \pi,1.43 \pi)$ and $U \sim \mathcal{N}(0,1)$:
+
+
+```{r}
+n = 500        # Sample size for illustration
+
+# Define conditional expectation function
+cef = function(x){sin(x)}
+
+# Draw sample
+x = runif(n,-pi*1.43,pi*1.43)
+y = cef(x) + rnorm(n,0,1)
+
+# Plot sample
+df = data.frame(x=x,y=y)
+ggplot(df) + stat_function(fun=cef,size=1) + 
+           geom_point(aes(x=x,y=y),color="blue",alpha = 0.4)
+```
+
+
+The DGP is engineered to trick OLS to estimate $\beta_0 = \beta_1 = 0$ like if there would be no information in the dataset:
+
+```{r}
+summary(lm(y~ x))
+```
+
+<br>
+
+Now we run a simulation study with this DGP and compare the evolution of the RMSE between OLS and kernel regression:
+
+
+```{r, results='hide'}
+r = 1000 # Decrease for faster running time
+seq = 4
+
+# Initialize empty matrices to fill in RMSE
+results_ols = results_kr = matrix(NA,r,seq+1)
+Ns = rep(NA,seq+1)
+
+for (i in 0:seq) { # Outer loop over sample sizes 
+  n = 4^i * start # sample size for this loop
+  Ns[i+1] = n
+  for (j in 1:r) { # Inner loop over replications
+    # Draw sample
+    x = runif(n,-pi*1.43,pi*1.43)
+    y = cef(x) + rnorm(n,0,1)
+    
+    # OLS
+    results_ols[j,i+1] = sqrt( mean( (lm(y ~ x)$fitted.values - cef(x))^2 ) )
+    
+    # Kernel
+    bwobj = npregbw(ydat = y, xdat = x, regtype = 'lc', bwmethod = 'cv.ls')
+    model = npreg(tydat = y, txdat = x, bws=bwobj$bw, regtype = 'lc')
+    if(j==1) plot(model, main = paste0("N=",toString(n)))
+    results_kr[j,i+1] = sqrt( mean( (fitted(model) - cef(x))^2 ) )
+  }
+}
+```
+
+
+OLS with only the main effect has no chance and converges to a completely wrong CEF such that the RMSE does not decrease with increasing sample size. Kernel regression on the other hand improves as we increase the sample size:
+
+```{r}
+tibble(N = Ns, ols = colMeans(results_ols), kernel = colMeans(results_kr)) %>%
+      pivot_longer(names_to = "Estimator",values_to = "rmse", cols = -N) %>%
+      ggplot(aes(x=N,y=rmse,color = Estimator)) + geom_line()  + geom_point()
+```
+
+Indeed, the convergence rate of Kernel regression in this simulation is close to the theoretical `r round(n^(2/5) / (4*n)^(2/5),3)` (and probably would come closer if we increased `r`):
+ 
+```{r}
+round(colMeans(results_kr)/lag(colMeans(results_kr)),3)
+```
+
+<br>
+<br>
+
+
+**Ideas for DIY extensions**:
+
+- Illustrate that the coefficients of OLS converge at $\sqrt{N}$ to zero?
+
+- How does OLS perform if we add squared, cubic,... terms?

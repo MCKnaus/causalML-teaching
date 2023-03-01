@@ -1,0 +1,474 @@
+---
+title: "Causal ML: Meta-learner"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Handcode R-learner
+
+- Illustrate use of R-learner and DR-learner
+
+<br>
+
+
+## DGP
+
+Consider a DGP with linear heterogeneous treatment effects, but nonlinear propensity score and outcome:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The potential outcome model of the controls is $Y(0) = \underbrace{sin(X_1)}_{m_0(X)} + \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The CATE function is a linear function of the first three covariates $\tau(X) = \underbrace{0.3}_{\rho_1} X_1 + \underbrace{0.2}_{\rho_2} X_2 + \underbrace{0.1}_{\rho_3} X_3$
+
+- The potential outcome model of the treated is $Y(1) = m_0(X) + \tau(X) + \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+We draw a sample of 1000 observations to begin with:
+
+```{r, warning = F, message = F}
+# Load packages
+library(grf)
+library(causalDML)
+library(tidyverse)
+library(glmnet)
+library(rlearner)
+library(psych)
+
+set.seed(1234)
+
+# Set parameters
+n = 1000
+p = 10
+
+# Correct parameters
+rho = c(0.3,0.2,0.1,rep(0,p-3))
+
+# Draw sample
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m0 = function(x){sin(x)}
+tau = x %*% rho
+w = rbinom(n,1,e(x[,1]))
+y = m0(x[,1]) + w*tau + rnorm(n,0,1)
+```
+
+<br>
+
+## Handcoded R-learner with OLS last step
+
+For illustration purposes we handcode an R-learner with cross-fitted nuisance parameters via honest Random Forest and heterogeneity estimation via OLS. This should work well because the nuisance parameters are nonlinear and heterogeneity is actually linear.
+
+First, we get the nuisance parameters $e(X)=E[W|X]$ and $m(X)=E[Y|X]$ via self-tuned honest Random Forest. We handcode 2-fold cross-validation in the familiar way:
+
+
+```{r}
+# R-learner with OLS last stage
+# 2-fold cross-fitting
+mhat = ehat = rep(NA,n)
+# Draw random indices for sample 1
+index_s1 = sample(1:n,n/2)
+# Create S1
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+# Create sample 2 with those not in S1
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+# Model in S1, predict in S2
+rf = regression_forest(x1,w1,tune.parameters = "all")
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1,y1,tune.parameters = "all")
+mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+# Model in S2, predict in S1
+rf = regression_forest(x2,w2,tune.parameters = "all")
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2,y2,tune.parameters = "all")
+mhat[index_s1] = predict(rf,newdata=x1)$predictions
+```
+
+We have now two ways to implement the R-learner
+
+<br>
+
+### 1. Modify the covariates
+
+Recall that we can rewrite the R-learner as minimizing a least squares problem with outcome residual as pseudo-outcome and modified covariates:
+
+$$\hat{\beta}^{rl} = argmin_{\beta} \sum_{i=1}^N \big(Y_i - \hat{m}(X_i) -  X_i^* \beta \big)^2$$
+
+where $X_i^* = X_i(W_i - \hat{e}(X_i))$ are the modified/pseudo-covariates.
+
+Note that $X_i$ includes the constant such that the first column of the modified covariates equals the treatment residuals and we run a regression without a "real" constant of ones:
+
+```{r}
+# Create residuals
+res_y = y-mhat
+res_w = w-ehat
+
+# Modify covariates (multiply each column including constant with residual)
+x_wc = cbind(rep(1,n),x)
+colnames(x_wc) = c("Intercept",paste0("X",1:p))
+xstar = x_wc * res_w
+# Regress outcome residual on modified covariates
+summary(lm(res_y ~ 0 + xstar))
+```
+
+The estimated coefficients are relatively close to their true values.
+
+<br>
+
+### 2. Pseudo-outcome and weights
+
+The more generic alternative is to use the unmodified covariates in a weighted regression with pseudo outcomes:
+$$\hat{\tau}^{rl}(x)  = argmin_{\tau} \sum_{i=1}^N \underbrace{(W_i - \hat{e}(X_i))^2}_{\text{weight}} \left(\underbrace{\frac{Y_i - \hat{m}(X_i)}{W_i - \hat{e}(X_i)}}_{\text{pseudo-outcome}} -  X_i\beta \right)^2$$
+
+
+```{r}
+# Create pseudo-outcome (outcome res divided by treatment res)
+pseudo_rl = res_y / res_w
+
+# Create weights
+weights_rl = res_w^2
+
+# Weighted regression of pseudo-outcome on covariates
+rols_fit = lm(pseudo_rl ~ x, weights=weights_rl)
+summary(rols_fit)
+r_ols_est = predict(rols_fit)
+```
+
+This produces the same results as the modified covariate as the equality of all coefficients shows:
+
+```{r}
+# test if all values are equal
+all.equal(as.numeric(rols_fit$coefficients), as.numeric(lm(res_y ~ 0 + xstar)$coefficients))
+```
+
+We store the fitted values as estimates of the CATEs to compare them later with the truth and other methods.
+
+```{r}
+# Estimate CATEs
+r_ols_est = predict(rols_fit)
+```
+
+<br>
+
+## Handcoded R-learner with Lasso last step
+
+The previous exercise should have convinced you that these different transformations work. I prefer the second option, but this is a matter of taste. Instead of OLS we can similarly estimate a weighted Lasso with the pseudo-outcomes where we again save the estimated CATEs for later comparison:
+
+```{r}
+# R-learner with Lasso
+rlasso_hand = cv.glmnet(x,pseudo_rl,weights=weights_rl)
+plot(rlasso_hand)
+rlasso_hand = predict(rlasso_hand,newx = x, s = "lambda.min")
+```
+<br>
+
+## `rlearner` package
+
+The R-learner can be more conveniently used via the `rlearner` package. It provides several options, but we focus on Lasso today, because the Boosting and Kernel options take quite some time to run. Note that this implementation uses now Lasso to estimate the nonlinear nuisance functions, which could deteriorate the performance. We store the predictions and will check below:
+
+```{r, warning = F}
+# Using the rlearner package
+rlasso_fit = rlasso(x, w, y)
+rlasso_est = predict(rlasso_fit, x)
+```
+
+<br>
+<br>
+
+## DR-learner via `causalDML` package
+
+The DR-learner uses the hopefully by now familiar pseudo-outcome of the AIPW ATE estimator and we will not handcode it again (see notebook *SNB_GATE* and replace the final OLS or Kernel regression step with the supervised ML method of your choice).
+
+The `causalDML` package implements the DR-learner with the required cross-fitting procedure. It is a bit more complicated than what we discussed so far, but uses the same ideas we have learned. For details see the Appendix of [Knaus (2020)](https://arxiv.org/abs/2003.03191).
+
+The default version of the `dr_learner` is implemented with an untuned honest Random Forest at all stages. This means it is well-suited for the nuisance parameters, but should have a harder time with the linear heterogeneous effects.
+
+
+```{r}
+# DR-learner
+dr_est = dr_learner(y,w,x)
+```
+
+
+Now it is time to compare the estimated CATEs of the estimators used so far to the, here known, true CATEs:
+
+```{r}
+# Store and plot predictions
+results1k = cbind(tau,r_ols_est,rlasso_hand,rlasso_est,dr_est$cates)
+colnames(results1k) = c("True","RL OLS","RL Lasso hand","rlasso","DR RF")
+pairs.panels(results1k,method = "pearson")
+```
+
+All estimators come quite close, but especially the DR-learner shows a lower correlation with the true CATEs.
+
+Interestingly when checking the MSE, we see that the seemingly high performing *rlasso* implementation performs much worse in terms of MSE than the high correlation would suggest. It gets the sorting right, but not the levels as a look at the axes indicates.
+
+```{r}
+# Compare MSE
+data.frame(MSE = colMeans( (results1k[,-1]-c(tau))^2 ) ,
+           Method = factor(colnames(results1k)[-1]) ) %>%
+  ggplot(aes(x=Method,y=MSE)) + geom_point(size = 2) + 
+  ggtitle(paste(toString(n),"observations")) + geom_hline(yintercept = 0)
+```
+
+
+<br>
+
+## With ensemble/SuperLearner
+
+A computationally more expensive, but agnostic approach is to create an ensemble or SuperLearner. The idea is that we form predictions via several different supervised ML methods and use a weighted average of their predictions as final prediction. These weights are chosen in a data-driven way via cross-validation to figure out which predictors work best for the prediction model at hand (see [Naimi and Balzer (2018)](https://link.springer.com/article/10.1007/s10654-018-0390-z) for a nice introduction with examples in R).
+
+I am not aware of such an implementation for the R-learner. However, the *dr_learner* allows to use such an ensemble of methods. We specify it to use ensembles of several methods.
+
+As the treatment is binary, we include the following methods to estimate the propensity score:
+
+- the mean (would be relevant if no selection into treatment)
+
+- self-tuned Random Forest
+
+- logistic Ridge regression
+
+- logistic Lasso regression
+
+For outcome nuisances and the heterogeneous effect, we use
+
+- the mean (would be relevant in case of effect heterogeneity)
+
+- self-tuned Random Forest
+
+- OLS regression
+
+- Ridge regression
+
+- Lasso regression
+
+
+
+```{r}
+## Create components of ensemble
+# General methods
+mean = create_method("mean")
+forest =  create_method("forest_grf",args=list(tune.parameters = "all",honesty=F))
+
+# Pscore specific components
+ridge_bin = create_method("ridge",args=list(family = "binomial"))
+lasso_bin = create_method("lasso",args=list(family = "binomial"))
+
+# Outcome specific components
+ols = create_method("ols")
+ridge = create_method("ridge")
+lasso = create_method("lasso")
+
+# DR-learner with ensemble
+dr_ens = dr_learner(y,w,x,ml_w=list(mean,forest,ridge_bin,lasso_bin),
+                    ml_y = list(mean,forest,ols,ridge,lasso),
+                    ml_tau = list(mean,forest,ols,ridge,lasso),quiet=T)
+```
+
+
+Let's check how this performs.
+
+
+```{r}
+# Add and plot predictions
+label_method = c("RL OLS","RL Lasso hand","rlasso","DR RF","DR Ens")
+results1k = cbind(tau,r_ols_est,rlasso_hand,rlasso_est,dr_est$cates,dr_ens$cates)
+colnames(results1k) = c("True",label_method)
+pairs.panels(results1k,method = "pearson")
+
+# Compare MSE
+data.frame(MSE = colMeans( (results1k[,-1]-c(tau))^2 ) ,
+           Method = factor(label_method,levels=label_method) ) %>%
+  ggplot(aes(x=Method,y=MSE)) + geom_point(size = 2) + 
+  ggtitle(paste(toString(n),"observations")) + geom_hline(yintercept = 0)
+```
+
+It does not perform as well as the handcoded R-learner that uses suitable methods for each component. However, it improves already upon the only Lasso R-learner and the only Random Forest DR-learner in terms of MSE. I think this is impressive given that only 1000 observations are available to figure out which methods work best. However this should become better and better if we increase the sample size.
+
+Thus we rerun the analysis with a draw of 4000 and of 16000 observations, which runs over two hours on my laptop.
+
+<br>
+
+## 4000 observations
+
+
+```{r}
+# Increase sample size
+n = 4000
+
+# Draw sample
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+tau = x %*% rho
+w = rbinom(n,1,e(x[,1]))
+y = m0(x[,1]) + w*tau + rnorm(n,0,1)
+
+# Handcoded R-learner with OLS last stage
+# C&P w/o comments from above
+mhat = ehat = rep(NA,n)
+index_s1 = sample(1:n,n/2)
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+rf = regression_forest(x1,w1,tune.parameters = "all")
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1,y1,tune.parameters = "all")
+mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x2,w2,tune.parameters = "all")
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2,y2,tune.parameters = "all")
+mhat[index_s1] = predict(rf,newdata=x1)$predictions
+res_y = y-mhat
+res_w = w-ehat
+pseudo_rl = res_y / res_w
+weights_rl = res_w^2
+rols_fit = lm(pseudo_rl ~ x, weights=weights_rl)
+r_ols_est = predict(rols_fit)
+
+# Handcoded R-learner with Lasso last stage
+rlasso_hand = cv.glmnet(x,pseudo_rl,weights=weights_rl)
+rlasso_hand = predict(rlasso_hand,newx = x, s = "lambda.min")
+
+# Using the rlearner package
+rlasso_fit = rlasso(x, w, y)
+rlasso_est = predict(rlasso_fit, x)
+
+# DR-learner
+dr_est = dr_learner(y,w,x)
+
+# DR-learner with ensemble
+dr_ens = dr_learner(y,w,x,ml_w=list(mean,forest,ridge_bin,lasso_bin),
+                    ml_y = list(mean,forest,ols,ridge,lasso),
+                    ml_tau = list(mean,forest,ols,ridge,lasso),quiet=T)
+# Add and plot predictions
+label_method = c("RL OLS","RL Lasso hand","rlasso","DR RF","DR Ens")
+results4k = cbind(tau,r_ols_est,rlasso_hand,rlasso_est,dr_est$cates,dr_ens$cates)
+colnames(results4k) = c("True",label_method)
+pairs.panels(results4k,method = "pearson")
+```
+
+```{r}
+# Compare MSE
+data.frame(MSE = colMeans( (results4k[,-1]-c(tau))^2 ) ,
+           Method = factor(label_method,levels=label_method) ) %>%
+  ggplot(aes(x=Method,y=MSE)) + geom_point(size = 2) + 
+  ggtitle(paste(toString(n),"observations")) + geom_hline(yintercept = 0)
+
+```
+
+<br>
+
+## 16000 observations
+
+```{r}
+# Increase sample size
+n = 16000
+
+# Draw sample
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+tau = x %*% rho
+w = rbinom(n,1,e(x[,1]))
+y = m0(x[,1]) + w*tau + rnorm(n,0,1)
+
+# Handcoded R-learner with OLS last stage
+# C&P w/o comments from above
+mhat = ehat = rep(NA,n)
+index_s1 = sample(1:n,n/2)
+x1 = x[index_s1,]
+w1 = w[index_s1]
+y1 = y[index_s1]
+x2 = x[-index_s1,]
+w2 = w[-index_s1]
+y2 = y[-index_s1]
+rf = regression_forest(x1,w1,tune.parameters = "all")
+ehat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x1,y1,tune.parameters = "all")
+mhat[-index_s1] = predict(rf,newdata=x2)$predictions
+rf = regression_forest(x2,w2,tune.parameters = "all")
+ehat[index_s1] = predict(rf,newdata=x1)$predictions
+rf = regression_forest(x2,y2,tune.parameters = "all")
+mhat[index_s1] = predict(rf,newdata=x1)$predictions
+res_y = y-mhat
+res_w = w-ehat
+pseudo_rl = res_y / res_w
+weights_rl = res_w^2
+rols_fit = lm(pseudo_rl ~ x, weights=weights_rl)
+r_ols_est = predict(rols_fit)
+
+# Handcoded R-learner with Lasso last stage
+rlasso_hand = cv.glmnet(x,pseudo_rl,weights=weights_rl)
+rlasso_hand = predict(rlasso_hand,newx = x, s = "lambda.min")
+
+# Using the rlearner package
+rlasso_fit = rlasso(x, w, y)
+rlasso_est = predict(rlasso_fit, x)
+
+# DR-learner
+dr_est = dr_learner(y,w,x)
+
+# DR-learner with ensemble
+dr_ens = dr_learner(y,w,x,ml_w=list(mean,forest,ridge_bin,lasso_bin),
+                    ml_y = list(mean,forest,ols,ridge,lasso),
+                    ml_tau = list(mean,forest,ols,ridge,lasso),quiet=T)
+# Add and plot predictions
+label_method = c("RL OLS","RL Lasso hand","rlasso","DR RF","DR Ens")
+results16k = cbind(tau,r_ols_est,rlasso_hand,rlasso_est,dr_est$cates,dr_ens$cates)
+colnames(results16k) = c("True",label_method)
+pairs.panels(results16k,method = "pearson")
+```
+
+```{r}
+# Compare MSE
+data.frame(MSE = colMeans( (results16k[,-1]-c(tau))^2 ) ,
+           Method = factor(label_method,levels=label_method) ) %>%
+  ggplot(aes(x=Method,y=MSE)) + geom_point(size = 2) + 
+  ggtitle(paste(toString(n),"observations")) + geom_hline(yintercept = 0)
+# save.image("D:/Switch/Teaching/GESIS Spring Seminar/Day 3/Meta_learner.RData")
+```
+
+With increasing sample size, the DR-learner with ensemble methods catches up with the methods that are tailored for the specific DGP. *rlasso* and the purely Random Forest based DR-learner continuously improve but are not competitive.
+
+This highlights that using ensemble learners as an agnostic way to manage the prediction tasks in meta-learners works quite well. Especially in practice this can be a big advantage because it is *a priori* not clear which methods best approximate the nuisance parameters and heterogeneity. The big downside is of course that it takes much much longer to compute.
+
+<br>
+<br>
+
+
+
+## Take-away
+ 
+ - Meta-learners are just combinations of different standard prediction problems $\Rightarrow$ combine standard functions in a modular way
+ 
+ - Using ensemble methods that figure out in a data-driven way which methods work for which prediction problem is an interesting option if we have time and no idea which single method works best in our setting
+ 
+<br>
+<br>
+ 
+ 
+## Suggestions to play with the toy model
+
+Some suggestions:
+ 
+- Add Causal Forest to the comparison
+
+- Create a non-linear CATE and linear nuisance functions or 
+
+- Change the treatment shares
+
+ 

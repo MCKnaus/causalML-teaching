@@ -1,0 +1,382 @@
+---
+title: "Causal ML: Offline policy learning"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "02/23"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Handcode policy learning with classification trees and Lasso 
+
+- Apply the `policytree` package
+
+<br>
+
+
+# Nonlinear heterogeneity and discrete policy rule
+
+We revisit the DGP from Notebooks *SNM_AIPW_DAML* and *SNB_GATE* with zero ATE but highly nonlinear effect heterogeneity:
+
+- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+
+- The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
+
+- The potential outcome model of the controls is $Y(0) = \underbrace{cos(X_1+1/2\pi)}_{m_0(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The potential outcome model of the treated is $\underbrace{sin(X_1)}_{m_0(X)} + \varepsilon$, with $\varepsilon \sim N(0,1)$
+
+- The treatment effect function is $\tau(X) = sin(X_1) - cos(X_1+1/2\pi)$
+
+This means that some simulated individuals benefit from the treatment (assuming that higher outcome is better) and some do not. The optimal policy is given by $\pi^*(x) = 1[X_1 > 0]$ and should be recovered by the methods we discussed in the lecture.
+
+
+```{r, warning = F, message = F}
+# Load packages
+library(rpart)
+library(rpart.plot)
+library(causalDML)
+library(glmnet)
+library(ggplot2)
+library(tidyverse)
+library(patchwork)
+library(policytree)
+library(ggridges)
+
+set.seed(1234)
+
+# define parameters for the DGP
+n = 1000
+p = 10
+
+# Generate data as usual, but save both Y0 and Y1
+x = matrix(runif(n*p,-pi,pi),ncol=p)
+e = function(x){pnorm(sin(x))}
+m1 = function(x){sin(x)}
+m0 = function(x){cos(x+1/2*pi)}
+tau = function(x){m1(x) - m0(x)}
+w = rbinom(n,1,e(x[,1]))
+y0 = m0(x[,1]) + rnorm(n,0,1)
+y1 = m1(x[,1]) + rnorm(n,0,1)
+y = w*y1 + (1-w)*y0 + rnorm(n,0,1)
+# Define optimal policy additionally
+pi_star = ifelse(x[,1]>0,"Treat","Don't treat")
+
+# plot the DGP
+g1 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=e,size=1) + ylab("e") + xlab("X1")
+g2 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=m1,size=1,aes(colour="Y1")) + 
+  stat_function(fun=m0,size=1,aes(colour="Y0")) + ylab("Y") + xlab("X1")
+g3 = data.frame(x = c(-pi, pi)) %>% ggplot(aes(x)) + stat_function(fun=tau,size=1) + ylab(expression(tau)) + 
+      xlab("X1") + geom_vline(xintercept=0) + annotate("text",-pi/2,0,label="Don't treat") + 
+      annotate("text",pi/2,0,label="Treat")
+g1 / g2 / g3
+```
+We see that the best policy assigns everybody with $X>0$ to treatment and leaves everybody with $X\leq0$ untreated.
+
+<br> 
+
+## Policy learning as a weighted classification problem
+
+1. Estimate the AIPW w/ 5-fold cross-fitting
+
+We draw a sample of $N=1000$ and and estimate the 5-fold cross-fit nuisance parameters $e(X)=E[W|X]$, $m(0,X)=E[Y|W=0,X]$ and $m(1,X)=E[Y|W=1,X]$ using random forest with honesty and plug the predictions into the pseudo outcome:
+$$\tilde{Y}_{ATE} = \underbrace{\hat{m}(1,X) - \hat{m}(0,X)}_{\text{outcome predictions}} + \underbrace{\frac{W (Y - \hat{m}(1,X))}{\hat{e}(X)} - \frac{(1-W) (Y - \hat{m}(0,X))}{1-\hat{e}(X)}}_{\text{weighted residuals}}.$$
+
+```{r}
+# Get the pseudo-outcome
+# 5-fold cross-fitting with causalDML package
+# Create learner
+forest = create_method("forest_grf",args=list(tune.parameters = "all"))
+# Run the AIPW estimation
+aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+# average potential outcomes
+summary(aipw$APO)
+# average treatment effect
+summary(aipw$ATE)
+```
+
+2. Estimate weighted classification
+
+We want to classify the sign of the CATE while favoring correct classifications with larger absolute CATEs. Instead of the unobserved CATE, we use the sign of the pseudo outcomes $\tilde{Y}_{ATE}$ from the Double ML AIPW to proxy the sign of the CATE and the absolute value of the pseudo-outcome to proxy the absolute value of the CATE. We then learn the policy by classifying the sign of the pseudo outcome using the available covariates/policy variables weighted by its absolute value:
+$$\hat{\pi}=\underset{\pi\in \Pi}{\operatorname{arg max}} \bigg\{ \frac{1}{N} \sum_{i=1}^{N} \mid \tilde{Y}_{i,ATE} \mid sign\big(\tilde{Y}_{i,ATE}\big) \big(2\pi(X_i)-1\big)\bigg\}.$$
+
+<br> 
+
+### Classification tree
+
+In the following, we estimate a policy assignment rule $\hat{\pi}^{tree}$ using a weighted classification tree. The advantage of the tree is its interpretability, but observe that it becomes overly complicated in this sample:
+
+```{r}
+# Define the sign of the pseudo-outcome
+sign_y_tilde = sign(aipw$ATE$delta)
+sign_y_tilde = factor(sign_y_tilde, labels = c("Don't treat","Treat"))
+
+# Define the weight as absolute value of the pseudo-outcome
+abs_y_tilde = abs(aipw$ATE$delta)
+
+# Build classification tree
+class_tree = rpart(sign_y_tilde ~ x,      # Predict sign of treatment
+                  weights = abs_y_tilde,  # with weight absolute pseudo outcome
+                  method = "class")      # tell we want to classify
+
+# Plot the tree
+rpart.plot(class_tree,digits=3)
+```
+
+We check the confusion matrix as a cross-table of the optimal and the estimates policy rule. We hope to find most observations on the diagonal
+
+```{r}
+# Predict the policy for everybody in the sample
+pi_hat_tree = predict(class_tree,type="class")
+# Compare to the optimal rule
+table(pi_star,pi_hat_tree)
+# compute the accuracy
+paste0("The classification accuracy of the tree is ", (sum(diag(table(pi_star,pi_hat_tree))) / n) * 100, "%")
+```
+
+We see that the majority is correctly classified. 
+
+As we know both potential outcomes in our simulated dataset, we can calculate (i) the value function under the optimal policy $Q(\pi^*) = E[Y(\pi^*)]$, (ii) the value function of the estimated assignment rule $Q(\hat{\pi}^{tree}) = E[Y(\hat{\pi}^{tree})]$ and (iii) the regret $R(\hat{\pi}^{tree}) = Q(\pi^*) - Q(\hat{\pi}^{tree})$
+
+```{r}
+# Calculate values and regret
+Q_pi_star = sum( (pi_star == "Treat") * y1 + (pi_star == "Don't treat") * y0 )
+Q_pi_hat_tree = sum( (pi_hat_tree == "Treat") * y1 + (pi_hat_tree == "Don't treat") * y0 )
+regret_tree = Q_pi_star - Q_pi_hat_tree
+# Print
+paste0("Q(pi*): ", round(Q_pi_star,1))
+paste0("Q(pi^tree): ", round(Q_pi_hat_tree,1))
+paste0("R(pi^tree): ", round(regret_tree,1))
+```
+
+<br>
+
+### Classification via logistic Lasso
+
+Let us compare this to a different classification algorithm - the logistic Lasso. This can be implemented with the *glmnet* package.
+
+
+```{r}
+# Use logistic Lasso for classification
+class_lasso = cv.glmnet(x, sign_y_tilde,       
+                  family = "binomial",       # tell that it is a binary variable
+                  type.measure = "class",    # tell that we want to classify
+                  weights = abs_y_tilde)      # using the abs pseudo-outcome as weights
+plot(class_lasso)
+# Predict the policy for everybody in the sample
+pi_hat_lasso = predict(class_lasso, newx = x, s = "lambda.min", type = "class")
+```
+
+We check again accuracy, value and regret:
+
+```{r}
+# Compare to the optimal rule
+table(pi_star,pi_hat_lasso)
+# compute the accuracy
+paste0("The classification accuracy of the Lasso is ", (sum(diag(table(pi_star,pi_hat_lasso))) / n) * 100, "%")
+# Calculate value and regret
+Q_pi_hat_lasso = sum( (pi_hat_lasso == "Treat") * y1 + (pi_hat_lasso == "Don't treat") * y0 )
+regret_lasso = Q_pi_star - Q_pi_hat_lasso
+# Print
+paste0("Q(pi*): ", round(Q_pi_star,1))
+paste0("Q(pi^lasso): ", round(Q_pi_hat_lasso,1))
+paste0("R(pi^lasso): ", round(regret_lasso,1))
+```
+
+In this draw the Lasso achieves a better classification accuracy than the regression tree and this is also reflected in a lower regret
+
+<br>
+
+### Policy learning via optimal decision trees
+
+The classification tree was cross-validated and build greedily. This means that that depth (number of splits) is chosen in a data-driven way. An alternative way is to fix the tree depth and to find the optimal splitting is via grid search. This is most important for multiple treatments where the classification trick fails, but also works for binary treatments.
+
+We use the `policytree` package to estimate a decision tree with one split and two splits. Instead of the ATE pseudo-outcome $\tilde{Y}_{ATE}$ that was stored in the `object\$ATE\$delta`, we have to pass the two columns containing the pseudo-outcomes for the two APOs $\tilde{Y}_{\gamma_0}$ and $\tilde{Y}_{\gamma_1}$ to the `policy_tree` function, which are stored in `object\$APO\$gamma`. But again we only reuse stuff that was needed to get the ATE in the first place.
+
+<br>
+
+#### One split
+
+```{r}
+# Run policy tree
+pt1 = policy_tree(x,aipw$APO$gamma,depth=1)
+pi_hat_pt1 = predict(pt1,newdata=x)
+plot(pt1)
+```
+
+Action 1 means no treatment, action 2  means treatment. We see that it nearly finds the perfect split. Let's check again performance: 
+
+```{r}
+# Compare to the optimal rule
+table(pi_star,pi_hat_pt1)
+# compute the accuracy
+paste0("The classification accuracy of the one split tree is ", (sum(diag(table(pi_star,pi_hat_pt1))) / n) * 100, "%")
+# Calculate value and regret
+Q_pi_hat_pt1 = sum( (pi_hat_pt1 == 2) * y1 + (pi_hat_pt1 == 1) * y0 )
+regret_pt1 = Q_pi_star - Q_pi_hat_pt1
+# Print
+paste0("Q(pi*): ", round(Q_pi_star,1))
+paste0("Q(pi^pt1): ", round(Q_pi_hat_pt1,1))
+paste0("R(pi^pt1): ", round(regret_pt1,1))
+```
+<br>
+
+#### Two splits
+
+Let's do the same with setting the depth to two:
+
+```{r}
+# Run policy tree
+pt2 = policy_tree(x,aipw$APO$gamma,depth=2)
+pi_hat_pt2 = predict(pt2,newdata=x)
+plot(pt2)
+```
+
+The optimal tree depth is known to us and would only use one split. By forcing the tree to split twice, we deteriorate its performance: 
+
+```{r}
+# Compare to the optimal rule
+table(pi_star,pi_hat_pt2)
+# compute the accuracy
+paste0("The classification accuracy of the two split tree is ", (sum(diag(table(pi_star,pi_hat_pt2))) / n) * 100, "%")
+# Calculate value and regret
+Q_pi_hat_pt2 = sum( (pi_hat_pt2 == 2) * y1 + (pi_hat_pt2 == 1) * y0 )
+regret_pt2 = Q_pi_star - Q_pi_hat_pt2
+# Print
+paste0("Q(pi*): ", round(Q_pi_star,1))
+paste0("Q(pi^pt2): ", round(Q_pi_hat_pt2,1))
+paste0("R(pi^pt2): ", round(regret_pt2,1))
+```
+
+<br>
+<br>
+
+# Simulation study
+
+To be sure that the results do not depend on one particular draw, we run 100 replications and plot the classification accuracy and the regret for the different methods.
+
+```{r}
+reps = 100
+
+# Initialize results containers
+results_ca = results_reg = matrix(NA,reps,4)
+colnames(results_ca) = colnames(results_reg) = c("Classification tree","Lasso","Policy tree 1","Policy tree 2")
+
+for (i in 1:reps) {
+  
+  # Draw sample
+  
+  x = matrix(runif(n*p,-pi,pi),ncol=p)
+  w = rbinom(n,1,e(x[,1]))
+  y0 = m0(x[,1]) + rnorm(n,0,1)
+  y1 = m1(x[,1]) + rnorm(n,0,1)
+  y = w*y1 + (1-w)*y0 + rnorm(n,0,1)
+  pi_star = ifelse(x[,1]>0,"Treat","Don't treat")
+  Q_star = sum( (pi_star == "Treat") * y1 + (pi_star == "Don't treat") * y0 )
+  
+  # Get pseudo-outcome
+  aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+  
+  # Define the sign of the pseudo-outcome
+  sign_y_tilde = sign(aipw$ATE$delta)
+  sign_y_tilde = factor(sign_y_tilde, labels = c("Don't treat","Treat"))
+
+  # Define the weight as absolute value of the pseudo-outcome
+  abs_y_tilde = abs(aipw$ATE$delta)
+
+  # Classification tree
+  class_tree = rpart(sign_y_tilde ~ x,    
+                  weights = abs_y_tilde,
+                  method = "class")
+  pi_hat_tree = predict(class_tree,type="class")
+  results_ca[i,1] = sum(diag(table(pi_star,pi_hat_tree))) / n * 100
+  results_reg[i,1] = Q_star - sum( (pi_hat_tree == "Treat") * y1 + (pi_hat_tree == "Don't treat") * y0 )
+  
+  # Lasso
+  class_lasso = cv.glmnet(x, sign_y_tilde,       
+                  family = "binomial",       # tell that it is a binary variable
+                  type.measure = "class",    # tell that we want to classify
+                  weights = abs_y_tilde)     # using the abs pseudo-outcome as weights
+  pi_hat_lasso = predict(class_lasso, newx = x, s = "lambda.min", type = "class")
+  results_ca[i,2] = sum(diag(table(pi_star,pi_hat_lasso))) / n * 100
+  results_reg[i,2] = Q_star - sum( (pi_hat_lasso == "Treat") * y1 + (pi_hat_lasso == "Don't treat") * y0 )
+  
+  # Policy tree depth 1
+  pt1 = policy_tree(x,aipw$APO$gamma,depth=1)
+  pi_hat_pt1 = predict(pt1,newdata=x)
+  results_ca[i,3] = sum(diag(table(pi_star,pi_hat_pt1))) / n * 100
+  results_reg[i,3] = Q_star - sum( (pi_hat_pt1 == 2) * y1 + (pi_hat_pt1 == 1) * y0 )
+  
+  # Policy tree depth 2
+  pt2 = policy_tree(x,aipw$APO$gamma,depth=2)
+  pi_hat_pt2 = predict(pt2,newdata=x)
+  results_ca[i,4] = sum(diag(table(pi_star,pi_hat_pt2))) / n * 100
+  results_reg[i,4] = Q_star - sum( (pi_hat_pt2 == 2) * y1 + (pi_hat_pt2 == 1) * y0 )
+}
+
+round(colMeans(results_ca),1)
+round(colMeans(results_reg),1)
+```
+
+We see that the depth one policy tree performs best in terms of classification accuracy and regret. This is not surprising as the fixed depth of one is basically the oracle.
+
+Plot the results:
+
+```{r}
+# Plot the data ready
+as_tibble(results_ca) %>% pivot_longer(cols = everything(), names_to = "Method", values_to = "CA") %>% 
+  ggplot(aes(x = CA, y = fct_rev(Method), fill = Method)) +
+  geom_density_ridges(stat = "binline", bins = 20, draw_baseline = FALSE) + xlab("Classification accuracy in percent")
+```
+
+```{r}
+# Plot the data ready
+as_tibble(results_reg) %>% pivot_longer(cols = everything(), names_to = "Method", values_to = "CA") %>% 
+  ggplot(aes(x = CA, y = fct_rev(Method), fill = Method)) +
+  geom_density_ridges(stat = "binline", bins = 20, draw_baseline = FALSE) + xlab("Regret")
+```
+
+Note that due to samplin
+
+
+## Take-away
+ 
+ - The pseudo-outcome from the Double ML AIPW estimator can also be used to estimate policy rules in a weighted classification problem and in a policy tree algorithm
+ 
+<br>
+<br>
+ 
+ 
+## Suggestions to play with the toy model
+
+Some suggestions:
+ 
+- Use different methods for the classification problem
+
+- Create a non-linear CATE and linear nuisance functions or 
+
+- Change the treatment shares
+
+- Run a simulation that compares the regret over multiple draws
+
+- Experience how long a depth three tree is running
+
+
+
+
+
+
+
+
+
+
+
+
+
+
