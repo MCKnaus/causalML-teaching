@@ -1,0 +1,87 @@
+---
+title: "Causal Inference: DAG and SWIG for RCTs"
+subtitle: "Application notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+
+Goals:
+
+- Show that $Y(w) \perp\!\!\!\perp W$ can be extracted from a SWIG
+
+<br>
+
+# DAG
+
+Define and plot the DAG representing the structural causal model 
+\[\begin{align*}
+    W = & f_W(U_W) \\
+    Y = & f_Y(W,U_Y)
+\end{align*}\]
+
+using the `dagitty` infrastructure
+
+```{r, warning = FALSE, message=FALSE}
+library(tidyverse)  # For ggplot2 and friends
+library(dagitty)    # For dealing with DAG math
+library(ggdag)      # For making DAGs with ggplot
+
+## A/B test
+## Randomized controlled trial
+## Randomized experiment
+
+# DAG
+dag = dagitty('dag{
+W [exposure,pos = "1,1"]
+Y [outcome,pos = "2,1"]
+W -> Y
+}')
+
+ggdag(dag) + theme_dag()
+```
+
+Check which (conditional) independences between observed variables are implied by the DAG:
+
+```{r}
+impliedConditionalIndependencies(dag)
+```
+
+Not surprisingly none.
+
+<br>
+<br>
+
+
+# SWIG
+
+Define and plot the SWIG implied by the structural causal model 
+\[\begin{align*}
+    W = & f_W(U_W) \\
+    Y = & f_Y(W,U_Y)
+\end{align*}\]
+
+
+```{r}
+swig_exp = dagitty('dag{
+W [exposure,pos = "1,1"]
+Yw [outcome,pos = "2,1"]
+w [pos = "1.2,1"]
+w -> Yw
+}')
+
+ggdag(swig_exp) + theme_dag()
+```
+
+
+and observe that it implies the standard independence $Y(w) \perp\!\!\!\perp W$ that is created be randomly allocating $W$
+
+```{r}
+impliedConditionalIndependencies(swig_exp)
+```
+
