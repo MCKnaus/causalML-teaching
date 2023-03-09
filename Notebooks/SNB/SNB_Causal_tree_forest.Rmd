@@ -2,7 +2,7 @@
 title: "Causal ML: Causal Tree and Causal Forest"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -17,7 +17,7 @@ Goals:
 
 - Illustrate how causal tree and causal forest improve on naive estimation
 
-- I particular visualize the weighted residual-on-residua regression underlying causal forests
+- Visualize the weighted residual-on-residual regression underlying causal forests
 
 <br>
 
