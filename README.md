@@ -3,7 +3,7 @@ This repository consolidates the teaching material of several "Causal Machine Le
 
 ## Comments
 
-Like the whole literature the content is a moving target. Please let me know if you spot any errors, disagreements, but also if you found the material useful.
+Like the whole literature the content is a moving target. Please let me know if you spot any errors, disagreements, but also if you found the material useful. To this end, [open an issue](https://github.com/MCKnaus/causalML-teaching/issues) or [write me a mail](mailto:michael.knaus@uni-tuebingen.de)
 
 The slides include links to a variety of compiled html R notebooks. Their Rmd files are provided in [this repository](https://github.com/MCKnaus/causalML-teaching/tree/main/Notebooks) if you are iterested in running and extending them yourself. A full list of available notebooks is provided on [my homepage](https://mcknaus.github.io/menu/teaching.html).
 
