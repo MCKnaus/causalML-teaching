@@ -10,13 +10,13 @@ The slides include links to a variety of compiled html R notebooks. Their Rmd fi
 ## Slides
 
 0. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML0_Welcome.pdf)
-1. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML1_metrics.pdf)
-2. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML2_SML.pdf)
-3. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML3_CI.pdf)
-4. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML4_DS_PLR.pdf)
-5. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML5_AIPW.pdf)
-6. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML6_DML.pdf)
-7. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML7_HTE.pdf)
-8. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML8_HTE2.pdf)
-9. [**Welcome**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML9_PL.pdf)
+1. [**Stats/’metrics recap**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML1_metrics.pdf)
+2. [**Supervised ML: predicting outcomes**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML2_SML.pdf)
+3. [**Causal Inference basis**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML3_CI.pdf)
+4. [**Estimating constant effects: Double Selection to Double ML**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML4_DS_PLR.pdf)
+5. [**Average treatment effect estimation: AIPW-Double ML**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML5_AIPW.pdf)
+6. [**Double ML - the general recipe**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML6_DML.pdf)
+7. [**Predicting effects**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML7_HTE.pdf)
+8. [**Heterogeneous effects with inference**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML8_HTE2.pdf)
+9. [**Policy learning**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML9_PL.pdf)
 
