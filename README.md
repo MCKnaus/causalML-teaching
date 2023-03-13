@@ -1,5 +1,5 @@
 # Teaching material for Causal ML
-This repository consolidates the teaching material of several "Causal Machine Learning" courses that focus on the integration of supervised ML methods/ideas to impact/policy/program evaluation.
+This repository consolidates the teaching material of several "Causal Machine Learning" courses I taught on the master and PhD level with a focus on impact/policy/program evaluation.
 
 ## Comments
 
