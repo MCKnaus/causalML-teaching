@@ -2,7 +2,7 @@
 title: "Supervised ML: Tree-based methods"
 subtitle: "Application notebook"
 author: "Michael Knaus"
-date: "01/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -16,7 +16,7 @@ Goal:
 
 <br>
 
-# Introducing the data
+## Introducing the data
 
 The Application Notebook builds on the dataset that is kindly provided in the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (`p401`) on net assets (`net_tfa`). Since then the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
 
@@ -46,12 +46,12 @@ We consider wealth in $1000 for better representation of the results.
 
 ```{r, warning = F, message = F}
 # Load the packages required for later
-library(hdm)
-library(tidyverse)
-library(rpart)
-library(partykit)
-library(grf)
-library(rpart.plot)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("rpart")) install.packages("rpart", dependencies = TRUE); library(rpart)
+if (!require("partykit")) install.packages("partykit", dependencies = TRUE); library(partykit)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("rpart.plot")) install.packages("rpart.plot", dependencies = TRUE); library(rpart.plot)
 
 set.seed(1234) # for replicability
 
@@ -66,7 +66,7 @@ Note that we only need the main effects in this notebook as tree-based methods a
 <br>
 <br>
 
-# Regression tree
+## Regression tree
 
 Let's build our first tree using the `rpart` package and `rpart.plot` for improved visualization. The tree is pruned using the default cross-validation:
 
@@ -88,13 +88,13 @@ plot(yhat_tree,Y)
 <br>
 <br>
 
-# Random Forest regression
+## Random Forest regression
 
-Random Forest take the average over many trees that are build on random subsamples using only random subsets of covaraites to split.
+Random Forest take the average over many trees that are build on random subsamples using only random subsets of covariates to split.
 
-There are many different implementations of Random Forests. Here we use the `regression_forest` function of the `grf` package because this is also crucial in the causal ML part.
+There are many different implementations of Random Forests. Here we use the `regression_forest` function of the `grf` package because the package is also important for the causal ML part.
 
-The random forest predictions are much smoother and overcomes the discrete nature of a single tree:
+The random forest predictions are much smoother and overcome the discrete nature of a single tree:
 
 
 ```{r}
@@ -118,9 +118,9 @@ Clearly the most predictive variables are income and the participation in an IRA
 <br>
 <br>
 
-# Compare performance
+## Compare performance
 
-Like in the Application Notebook for Lasso, we check how different methods perform out-of-sample by splitting the dataset in 100 random training and test sets to check the out-of-sample $R^2$.
+Like in the [Supervised ML: Lasso](https://mcknaus.github.io/assets/notebooks/appl401k/ANB_401k_Lasso.nb.html) Application Notebook, we check how different methods perform out-of-sample by splitting the data set in 100 random training and test sets to check the out-of-sample $R^2$.
 
 We compare three different methods:
 
@@ -185,7 +185,7 @@ for (i in 1:rep) {
 ```
 
 
-A look at the mean $R^2$ reveals that - as expeced - the single tree performs much worse than the two random forests that are very similar:
+A look at the mean $R^2$ reveals that - as expected - the single tree performs much worse than the two random forests that are very similar:
 
 
 ```{r}
@@ -200,7 +200,7 @@ as.data.frame(results_r2) %>% pivot_longer(cols=everything(),names_to = "Method"
 ```
 
 
-However, Lasso-based methods achieved on average up to 29% $R^2$ compared to 26% of the tree-based methods. Thus, it seems that linear model are slightly better suited to predict wealth in this application.
+However, Lasso-based methods achieved on average up to 29% $R^2$ compared to 26% of the tree-based methods. Thus, it seems that global methods are slightly better suited to predict wealth in this application.
 
 <br>
 <br>

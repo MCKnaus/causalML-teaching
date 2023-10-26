@@ -2,7 +2,7 @@
 title: "Supervised ML: Lasso"
 subtitle: "Application notebook"
 author: "Michael Knaus"
-date: "01/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -45,10 +45,10 @@ However, it is publicly available and the relatively few covariates ensure that 
 
 ```{r, warning = F, message = F}
 # Load the packages required for later
-library(hdm)
-library(glmnet)
-library(tidyverse)
-library(skimr)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("skimr")) install.packages("skimr", dependencies = TRUE); library(skimr)
 
 set.seed(1234) # for replicability
 options(scipen = 999) # Switch off scientific notation
@@ -238,10 +238,9 @@ dim(X4)
 
 We consider 100 random splits into training and test sample to ensure that our results are not an artifact of one particular split and run OLS, Lasso and Post-Lasso with the four different covariate matrices (Post-Lasso with *X4* is omitted as it would more then double the computation time).
 
-
 ```{r}
 # Here we define some useful function to keep the code clean
-# They run the method in the training sample and calcualte the test set R2
+# They run the method in the training sample and calculate the test set R2
 ols_oos_r2 = function(x_tr,y_tr,x_te,y_te) {
   ols = lm(y_tr ~ x_tr)
   betas = ols$coefficients
@@ -305,6 +304,7 @@ for (i in 1:rep) {
   results_r2[i,11] = plasso_oos_r2(X_tr3,Y_tr,X_te3,Y_te)
   # results_r2[i,12] = plasso_oos_r2(X_tr4,Y_tr,X_te4,Y_te)
 }
+# If you read this and like to parallelize stuff, feel free to send me a fast version ;-)
 ```
 
 First, let's check the mean out-of-sample $R^2$ for the different methods over the 100 different splits:
@@ -315,7 +315,7 @@ t( round(colMeans(results_r2),3) )
 
 Some observations from this specific application:
 
-- Running OLS with third and foruth order terms is hopeless. The mean $R^2$ becomes even negative. How can this happen? The $R^2$ is negative if the prediction model performs worse than just using the outcome mean for prediction. This is exactly the overfitting behaviour that we discuss in the slides.
+- Running OLS with third and fourth order terms is hopeless. The mean $R^2$ becomes even negative. How can this happen? The $R^2$ is negative if the prediction model performs worse than just using the outcome mean for prediction. This is exactly the overfitting behaviour that we discuss in the slides.
 
 - OLS with second order terms is quite competitive.
 
