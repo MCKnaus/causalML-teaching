@@ -1,7 +1,7 @@
 ---
 title: "Supervised ML: Tree-based methods"
 author: "Michael Knaus"
-date: "01/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -13,14 +13,14 @@ output:
 
 Goals:
 
-- Illustrate Tree-based methods
+- Illustrate tree-based methods
 
 - and the difference between global and local methods
 
 <br>
 
 
-# Data generating process
+## Data generating process
 
 Consider a model with only one covariate: $Y = \underbrace{2X - X^3}_{CEF} + \epsilon$, where $X \sim uniform(0,1)$ and $\epsilon \sim N(0,1/3)$.
 
@@ -28,11 +28,11 @@ Plot a random draw with $N=500$ and the true CEF.
 
 ```{r message=FALSE}
 # Load the packages required for later
-library(tidyverse)
-library(rpart)
-library(partykit)
-library(grf)
-library(rpart.plot)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("rpart")) install.packages("rpart", dependencies = TRUE); library(rpart)
+if (!require("partykit")) install.packages("partykit", dependencies = TRUE); library(partykit)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("rpart.plot")) install.packages("rpart.plot", dependencies = TRUE); library(rpart.plot)
 
 set.seed(1234) # For replicability
 
@@ -51,9 +51,11 @@ ggplot(df) + stat_function(fun=cef,size=1) +
 <br>
 <br>
 
-# Different ways to fit the data
+## Different ways to fit the data
 
-## OLS
+### OLS
+
+Plain OLS without any polynomials fits a straight line through the data cloud missing the non-linear shape but providing the best linear approximation:
 
 ```{r}
 df$y_hat_ols = predict(lm(y~x))
@@ -65,7 +67,9 @@ ggplot(df,aes(x=x,y=y)) + stat_function(fun=cef,size=1) +
 
 <br>
 
-## Regression tree
+### Regression tree
+
+The regression tree provides a step function approximation of the non-linear shape:
 
 ```{r}
 tree = rpart(y~x,data = df)
@@ -77,9 +81,13 @@ ggplot(df) + stat_function(fun=cef,size=1) +
   geom_point(aes(x=x,y=y_hat_tree),shape="square",color="blue") 
 ```
 
+Notably the leaves are more narrow in the left part region where the curve is steeper, while more observation are pooled on the right where the functions is relatively flat. This makes intuitive sense.
+
 <br>
 
-## Random Forest
+### Random Forest
+
+Random Forest combines many of such stepwise approximation and provides a relatively good and smooth approximation of non-linear CEF:
 
 ```{r}
 rf = regression_forest(as.matrix(x),y,tune.parameters = "all",num.trees = 2000)
@@ -93,7 +101,7 @@ ggplot(df) + stat_function(fun=cef,size=1) +
 <br>
 <br>
 
-# Global vs. local predictors
+## Global vs. local predictors
 
 To understand the difference between global and local methods, consider that we want to predict the outcome value at $x_0 = 0.2$. Each of the three estimators uses just a weighted average of observed outcomes to form this prediction.
 
@@ -101,9 +109,9 @@ To understand the difference between global and local methods, consider that we 
 test_point = 0.2
 ```
 
-## OLS
+### OLS
 
-Recall that in matrix notation the parameter estimates are $\beta = (X'X)^{-1}X'Y$, where $X$ constains a constant. Now the fitted value at the test point is $\hat{y}_0 = [1~x_0] \beta = \underbrace{[1~x_0] (X'X)^{-1}X'}_{w_{ols}} Y$, where $w_{ols}$ contains the weights that each outcome receives when forming the fitted value.
+Recall that in matrix notation the parameter estimates are $\beta = (X'X)^{-1}X'Y$, where $X$ contains a constant. Now the fitted value at the test point is $\hat{y}_0 = [1~x_0] \beta = \underbrace{[1~x_0] (X'X)^{-1}X'}_{w_{ols}} Y$, where $w_{ols}$ contains the weights that each outcome receives when forming the fitted value.
 
 We graph the scatterplot of the observed data with larger points indicating a larger absolute outcome weight, and the color indicating whether the outcome weight is positive or negative:
 
@@ -122,11 +130,11 @@ ggplot(df) + stat_function(fun=cef,size=1) +
   scale_color_manual(values=c("red","blue"))
 ```
 
-A global method like OLS uses all available data points to form the prediction and outcomes that are far away of the point of interest receive negative weight.
+A global method like OLS uses all available data points to form the prediction and outcomes that are far away of the point of interest receive negative weights.
 
 <br>
 
-## Regression trees
+### Regression trees
 
 The predictions of regression trees are formed as an average within the leaf of the point of interest. This means that all outcomes in that leaf receive the same weight and all other outcomes a weight of zero:
 
@@ -155,7 +163,7 @@ The problem is that predictions at the boundary discard outcomes that are very c
 <br>
 
 
-## Random Forest
+### Random Forest
 
 The Random Forest creates a smoother weighting function and gives larger weights to closer outcomes and ignores outcomes that are further away.
 
@@ -193,4 +201,6 @@ Feel free to play around with the code. This is useful to sharpen and challenge 
 - Decrease and increase the number of observations
 
 - Decrease and increase the number of trees for the random forest
+
+- Add squared or cubic covariates to OLS specification
  

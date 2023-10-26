@@ -2,7 +2,7 @@
 title: "(Conditional) Independence"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "06/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -19,12 +19,12 @@ Goals:
 
 <br>
 
-*Acknowledgements: I thank Henri Pfleiderer for his help in preparing this notebook.*
+*Acknowledgements: I thank Henri Pfleiderer for his assistance in preparing this notebook.*
 
 <br>
 
 ## Formal definition of (conditional) independence
-#### Discrete Variables
+### Discrete Variables
 
 Independence of two discrete variables $Y$ and $W$: 
 
@@ -36,7 +36,7 @@ $$ P(Y=y \mid W=w) =  \frac{P(Y=y, W=w)}{P(W=w)} = \frac{P(Y = y) \cdot P(W = w)
 
 <br>
 
-#### Continuous Variables
+### Continuous Variables
 
 Equivalently, two continuous variables $Y$ and $W$ being independent means:
 
@@ -45,7 +45,7 @@ where $f$ denotes probability density functions.
 
 <br>
 
-#### Mixed Case
+### Mixed Case
 
 In addition to these two cases there is a mixed case. Consider for example a continuous $Y$ and a discrete $W$. This is a very common setup in causal inference. We may think of $Y$ as a continuous outcome and $W$ a binary treatment indicator. In this case:
 
@@ -90,11 +90,11 @@ All of this is illustrated in the following examples.
 
 ## General Example 
 
-Let's imagine the following DGP: 
+Let's consider the following DGP: 
 
-$$\begin{align} Y_i= X_i + U_i \ \ \ with \ \ \ U_i \sim \mathcal{N}(0,0.5) \\
-X_i = \mathbf{1}(V_i\geq 0) \\
-W_i = \mathbf{1}(Z_i\geq 0) \\
+$$\begin{align} Y= X + U \ \ \ with \ \ \ U \sim \mathcal{N}(0,0.5) \\
+X = \mathbf{1}(V\geq 0) \\
+W = \mathbf{1}(Z\geq 0) \\
  [V, Z]'\sim \mathcal{N}\left([0~~0]',\left[ \begin{array}
 {rrr}
 1 & \rho  \\
@@ -105,9 +105,10 @@ W_i = \mathbf{1}(Z_i\geq 0) \\
 First, consider the case where $Y$ and $W$ are independent (i.e. $\rho =0$). This is illustrated by drawing a large sample from the described DGP with $\rho = 0$:
 
 ```{r, warning = FALSE, message=FALSE}
-library(tidyverse)
-library(ggridges)
-library(MASS)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("ggridges")) install.packages("ggridges", dependencies = TRUE); library(ggridges)
+if (!require("MASS")) install.packages("MASS", dependencies = TRUE); library(MASS)
+
 set.seed(1234)
 n = 1000000
 mu = c(0,0)
@@ -119,7 +120,7 @@ W = 1*(draw[,2] > 0)
 Y = X + rnorm(n, sd = 0.5)
 ```
 
-Let's plot the distributions of $Y$ for different $W=0$ and $W=1$:
+Let's plot the distributions of $Y$ for $W=0$ and $W=1$:
 
 ```{r, message = FALSE}
 tibble(Y,W,X) %>% mutate(W = as.factor(W)) %>% 
@@ -140,8 +141,6 @@ mean(Y[W==0])
 Now, let's introduce some correlation between the variables $V$ and $Z$ by setting $\rho = 0.6$. This creates dependence between $Y$ and $W$:
 
 ```{r, warning = FALSE, message=FALSE}
-library(tidyverse)
-library(MASS)
 set.seed(1234)
 n = 1000000
 mu = c(0,0)
@@ -190,14 +189,13 @@ tibble(Y,W,X) %>% group_by(X,W) %>% summarise(mean_Y = mean(Y))
 tibble(Y,W,X) %>% group_by(X) %>% summarise(mean_Y = mean(Y))
 ```
 
+<br>
 
 ## Example: Potential Outcomes and causal inference
 
-Let's look at the importance of the above concept in a causal inference context. $Y$ denotes the outcome of interest, $W$ the treatment and $X$ some additional (confounding) variable. $Y(1)$ and $Y(0)$ are the potential outcomes in the treated and untreated case respectively, so $Y = W \cdot Y(1) + (1-W) \cdot Y(0)$.
+Let's look at the importance of the above concept in a causal inference context. $Y$ denotes the outcome, $W$ the treatment and $X$ some confounding variable. $Y(1)$ and $Y(0)$ are the potential outcomes in the treated and untreated case respectively, so $Y = W \cdot Y(1) + (1-W) \cdot Y(0)$.
 
 ```{r, warning = FALSE, message=FALSE}
-library(tidyverse)
-library(MASS)
 set.seed(1234)
 n = 1000000
 mu = c(0,0)
@@ -212,30 +210,24 @@ Y = W*Y1 + (1-W)*Y0
 ```
 
 
-$Y(0)$ and $Y(1)$ are the potential outcomes for the untreated and the treated case. $Y(0) = X + U_0$ with $U_0 \sim \mathcal{N}(0,0.5)$.
+Consider the following DGP:
 
-$Y(1) = 0.5 + X + U_1$ with $U_1 \sim \mathcal{N}(0,0.5)$. 
+- $Y(0) = X + U_0$ with $U_0 \sim \mathcal{N}(0,0.5)$.
 
-In short:
+- $Y(1) = 0.5 + X + U_1$ with $U_1 \sim \mathcal{N}(0,0.5)$. 
 
-$$\begin{align}   Y_{i} =
-    \begin{cases}
-      X_{i} + U_{0i} & \text{if $W_{i} = 0$}\\
-      0.5 + X_{i} + U_{1i} & \text{if $W_{i} = 1$}
-    \end{cases}  
-\end{align}$$
-
-and:
-$$
-X_i = \mathbf{1}(V_i\geq 0) \\
-W_i = \mathbf{1}(Z_i\geq 0) \\
+and
+$$\begin{align}
+X = \mathbf{1}(V\geq 0) \\
+W = \mathbf{1}(Z\geq 0) \\
  [V, Z]'\sim \mathcal{N}\left([0~~0]',\left[ \begin{array}
 {rrr}
 1 & \rho  \\
 \rho & 1 
-\end{array}\right]\right) $$
+\end{array}\right]\right) 
+\end{align}$$
 
-First, consider the case with $\rho = 0$ to illustrate independence in the sense that $Y(w) \perp\!\!\!\!\perp W$.
+First, consider again the case with $\rho = 0$ to illustrate independence in the sense that $Y(w) \perp\!\!\!\!\perp W$.
 
 To see that this holds in the first example, plot the distributions of $Y(1)$ for the treated and the untreated separately. As we have independence, they should look identical:
 
@@ -270,8 +262,6 @@ print(TE_mean_comparison)
 As above, let's introduce some correlation between $V$ and $Z$ by setting $\rho = 0.6. Now, $X$ and $W$ are not independent:
 
 ```{r, warning = FALSE, message=FALSE}
-n = 1000000
-mu = c(0,0)
 rho = 0.6
 sigma = matrix(c(1,rho,rho,1), nrow = 2)
 draw = mvrnorm(n, mu, sigma)
@@ -350,5 +340,5 @@ summary(lm(Y~ W + X))
 
 This recovers the true ATE. Note, that here the true structural model is actually linear and OLS can be used to recover the true coefficients on $X$ and $W$:
 
-$$ Y_i = W_i\cdot (0.5 + X_i + U_{1i}) + (1-W_i) \cdot (X_{i} + U_{0i}) = 0.5W_i + X_i +W_iU_{1i} + (1-W_i)U_{0i} =  0.5W_i + X_i + U_i$$
+$$ Y = W\cdot (0.5 + X + U_{1}) + (1-W) \cdot (X + U_{0}) = 0.5W + X +\underbrace{WU_{1} + (1-W)U_{0}}_{=U} =  0.5W + X + U$$
 

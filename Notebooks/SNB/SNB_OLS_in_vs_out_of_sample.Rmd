@@ -1,7 +1,7 @@
 ---
-title: "Supervised ML: Overfitting of OLS and value of training vs. test sample"
+title: "Overfitting of OLS and value of training vs. test sample"
 author: "Michael Knaus"
-date: "01/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -19,15 +19,15 @@ Goals:
 
 <br>
 
-# Data generating process
+## Data generating process
 
-## Definition
+### Definition
 
-Consider the following simple data generating process (DGP):
+Consider the following linear data generating process (DGP):
 
 - $p\geq10$ independent and standard normal covariates: $X \sim N(0,I_p)$, where $I_p$ is the $p$-dimensional identity matrix
 
-- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{conditional expectation function }f(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{conditional expectation function }m(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
 
 - We consider the following parameters $\beta_0 = 0$, $\beta_1 = 1$, $\beta_2 = 0.9$, ..., $\beta_9 = 0.2$, $\beta_{10} = 0.1$ such that the first 10 variables have a decreasing impact on the outcome and any further variables are just irrelevant noise with no true predictive power
 
@@ -35,8 +35,8 @@ We set $p=99$ and draw a training sample with $N_{tr}=100$ and a test sample wit
 
 ```{r message=FALSE, warning = F}
 # Load the packages required for later
-library(tidyverse)
-library(skimr)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("skimr")) install.packages("skimr", dependencies = TRUE); library(skimr)
 
 set.seed(1234) # For replicability
 
@@ -62,7 +62,7 @@ y_te = cfe_te + rnorm(n_te,0,1)
 <br>
 
 
-## Some descriptives
+### Some descriptives
 
 Summarize the covariates:
 
@@ -79,7 +79,7 @@ hist(cfe_te)
 <br>
 
 
-# Perfectly specified OLS
+### Perfectly specified OLS
 
 Imagine that we were told that the true model consists only of the first ten variables. Then we could specify the correct model:
 
@@ -112,11 +112,13 @@ This indicates that the in-sample MSE understates the true error $\Rightarrow$ f
 <br>
 
 
-# Gradually adding covariates and the failure of in-sample measures
+## The failure of in-sample measures
+
+### Gradually adding covariates
 
 Now consider the case where nobody tells us the correct model and we gradually add the variables to the model. We start with a model including a constant and $X_1$, then add $X_2$, then $X_3$, ..., and end up with a model with a constant and 99 regressors.
 
-We calculate and store four quantities: the training and test sample MSE that would be observable in a real application $(Y-\hat{m}(X))^2$ and the respective oracle MSEs $(Y-m(Y))^2$, where we exploit that we defined and thus know the true CEF.
+We calculate and store four quantities: the training and test sample MSE that would be observable in a real application $(Y-\hat{m}(X))^2$ and the respective oracle MSEs $(Y-m(X))^2$, where we exploit that we defined and thus know the true CEF.
 
 ```{r}
 # Container of the results
@@ -148,7 +150,7 @@ df = data.frame("Number of variables" = 1:p,results_ols)
 # Plot training MSE
 ggplot(df, aes(Number.of.variables)) + 
   geom_line(aes(y = Obs.MSE.train, colour = "Obs.MSE.train"),size=1) + 
-  ylab("MSE")
+  ylab("MSE") + geom_hline(yintercept = 0)
 ```
 
 The in-sample MSE drops substantially in the beginning when the relevant variables are added. However, it further decreases gradually as we add more noise variables. Finally, the MSE is exactly zero if as many parameters as observations are estimated. 
@@ -171,8 +173,8 @@ Now let's plot the training sample MSE from before and the test sample MSE:
 # Comparison of observable MSEs
 ggplot(df, aes(Number.of.variables)) + 
   geom_line(aes(y = Obs.MSE.train, colour = "Obs.MSE.train"),size=1) + 
-  geom_line(aes(y = Obs.MSE.test, colour = "Obs.MSE.test"),size=1) + ylab("MSE")
-
+  geom_line(aes(y = Obs.MSE.test, colour = "Obs.MSE.test"),size=1) + ylab("MSE") +
+  geom_hline(yintercept = 0)
 ```
 
 While the training MSE drops to zero, the test sample MSE explodes when the ratio of number of covariates and observations approaches one. 
@@ -182,7 +184,8 @@ Let's cut off the extreme values from the right:
 ```{r}
 ggplot(df[1:80,], aes(Number.of.variables)) + 
   geom_line(aes(y = Obs.MSE.train, colour = "Obs.MSE.train"),size=1) + 
-  geom_line(aes(y = Obs.MSE.test, colour = "Obs.MSE.test"),size=1) + ylab("MSE")
+  geom_line(aes(y = Obs.MSE.test, colour = "Obs.MSE.test"),size=1) + ylab("MSE") +
+  geom_hline(yintercept = 0)
 ```
 
 We observe completely different trajectories between training and test MSE after the relevant variables are added.
@@ -192,17 +195,17 @@ Finally, let's check how well the feasible MSE compares to the infeasible oracle
 ```{r}
 ggplot(df[1:80,], aes(Number.of.variables)) + 
   geom_line(aes(y = Obs.MSE.test, colour = "Obs.MSE.test"),size=1) + 
-  geom_line(aes(y = Oracle.MSE.test, colour = "Oracle.MSE.test"),size=1) + ylab("MSE")
-
+  geom_line(aes(y = Oracle.MSE.test, colour = "Oracle.MSE.test"),size=1) + ylab("MSE") +
+  geom_hline(yintercept = 0)
 ```
 
-The observable and the oracle MSE are nearly identical. This illustrates why using the observable MSE as proxy for predictive performance is so powerful.
+The observable and the oracle MSE are nearly identical. This illustrates why using the observable out-of-sample MSE as proxy for predictive performance is so powerful.
 
 <br>
 <br>
 
 
-## Take-aways
+### Take-aways
  
  - It is easy to optimize in-sample fit for OLS by adding noise variables, but this does not resemble the true prediction performance.
  
@@ -214,9 +217,9 @@ The observable and the oracle MSE are nearly identical. This illustrates why usi
 <br>
  
  
-## Suggestions to play with the toy model
+### Suggestions to play with the toy model
 
-Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modifications before you run it and check whether the results are in line with your expectation. Some suggestions:
+Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modification before you run it and check whether the results are in line with your expectation. Some suggestions:
  
 - Modify DGP (change betas, change level of noise, introduce correlation between covariates, ...)
 

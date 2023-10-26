@@ -1,7 +1,7 @@
 ---
 title: "Supervised ML: Lasso saves the job of OLS"
 author: "Michael Knaus"
-date: "01/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -19,13 +19,13 @@ Goals:
 
 <br>
 
-# Data generating process
+## Data generating process
 
-We use the same DGP as in the notebook *Supervised ML: Overfitting of OLS and value of training vs. test sample*:
+We use the same DGP as in the notebook [Overfitting of OLS and value of training vs. test sample](https://mcknaus.github.io/assets/notebooks/SNB/SNB_OLS_in_vs_out_of_sample.nb.html):
 
 - $p\geq10$ independent and standard normal covariates: $X \sim N(0,I_p)$, where $I_p$ is the $p$-dimensional identity matrix
 
-- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{conditional expectation function }f(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{conditional expectation function }m(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
 
 - We consider the following parameters $\beta_0 = 0$, $\beta_1 = 1$, $\beta_2 = 0.9$, ..., $\beta_9 = 0.2$, $\beta_{10} = 0.1$ such that the first 10 variables have a decreasing impact on the outcome and any further variables are just irrelevant noise with no true predictive power
 
@@ -33,12 +33,10 @@ We set $p=99$ and draw a training sample with $N_{tr}=100$ and a test sample wit
 
 ```{r message=FALSE, warning = FALSE}
 # Load the packages required for later
-library(tidyverse)
-library(glmnet)
-library(hdm)
-# library(devtools)
-# install_github(repo="MCKnaus/causalDML")
-library(causalDML)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("plasso")) install.packages("plasso", dependencies = TRUE); library(plasso)
 
 set.seed(1234) # For replicability
 
@@ -48,7 +46,7 @@ n_te = 10000
 p = 99
 beta = c(0,seq(1,0.1,-0.1),rep(0,p-10))
 
-# Combine costant and randomly drawn covariates
+# Combine constant and randomly drawn covariates
 x_tr = cbind(rep(1,n_tr),matrix(rnorm(n_tr*p),ncol=p))
 x_te = cbind(rep(1,n_te),matrix(rnorm(n_te*p),ncol=p))
 
@@ -63,7 +61,7 @@ y_te = cfe_te + rnorm(n_te,0,1)
 
 <br>
 
-# Lasso at work
+## Lasso at work
 
 We run Lasso with all 99 regressors. The `glmnet` command calculates the trajectory from an empty model to a nearly unpenalized model (read from right to left):
 
@@ -74,7 +72,9 @@ lasso = glmnet(x_tr,y_tr)
 plot(lasso, xvar = "lambda")
 ```
 
-In the beginning the coefficients of the really relevant variables are build up and at some point the excessive overfitting starts. Cross-validation helps to figure out the sweet spot that ensures a good out-of-sample performance. The `cv.glmnet` command uses by default 10-fold cross-validation leading to the following result:
+In the beginning the coefficients of the really relevant variables are build up and at some point the excessive overfitting starts. 
+
+**Cross-validation** helps to figure out the sweet spot that ensures a good out-of-sample performance. The `cv.glmnet` command uses by default 10-fold cross-validation leading to the following result:
 
 ```{r}
 cv_lasso = cv.glmnet(x_tr,y_tr)
@@ -85,31 +85,40 @@ We observe that the cross-validated MSE decreases as the relevant variables are 
 
 <br>
 
-# Post-Lasso at work
+## Post-Lasso at work
 
-## Cross-validated
+### Cross-validated
 
-Cross-validation for Post-Lasso is implemented in the `causalDML` package:
+Cross-validation for Post-Lasso is implemented in the `plasso` package:
 
 ```{r}
 # Provide the cov matrix w/o the constant x_tr[,-1]
 # Increasing lambda.min.ratio ensures that Lasso does not overfit too heavily and reduces running time
 post_lasso = plasso(x_tr[,-1],y_tr,lambda.min.ratio=0.01)
-summary(post_lasso)
-plot(post_lasso)
+plot(post_lasso,xvar = "lambda")
+```
+
+While Lasso builds up coefficients gradually, Post-Lasso gives the full OLS coefficient as soon as the variable is selected $\Rightarrow$ the coefficients paths of Post-Lasso are usually not smooth.
+
+This is also observable in the cross-validation curve:
+
+
+```{r}
+cv_plasso = cv.plasso(x_tr,y_tr,lambda.min.ratio=0.01)
+plot(cv_plasso, legend_pos="bottomleft")
 ```
 
 The comparison of Lasso and Post-Lasso cross-validation is instructive to understand some differences:
 
-- The Post-Lasso cross-validation curve is more bumpy and has flat regions compared to the Lasso curve. While Lasso builds up coefficients gradually, Post-Lasso gives the full OLS coefficient as soon as the variable is selected. This explains the flat regions of the Post-Lasso curve where no additional variable is selected and thus MSE stays constant.
+- The Post-Lasso cross-validation curve is more bumpy and has flat regions compared to the Lasso curve. Post-Lasso gives the full OLS coefficient as soon as the variable is selected. This explains the flat regions of the Post-Lasso curve where no additional variable is selected and thus MSE stays constant.
 
-- This also explains why Post-Lasso produces sparser models compared to Lasso.
+- Post-Lasso usually produces sparser cross-validated models because the unshrunken coefficients deliver more explanatory power with a smaller set of variables.
 
 <br>
 
-## Fast implementation with `hdm` 
+### Fast implementation with `hdm` 
 
-While the cross-validated Post-Lasso is instructive, it is not fast and the `rlasso` function of the `hdm` package implements a faster way to choose the penalty parameter:
+While the cross-validated Post-Lasso is instructive, it is not fast and the `rlasso` function of the `hdm` package implements a faster way to choose the penalty parameter in a data-driven way:
 
 ```{r}
 post_hdm = rlasso(x_tr,y_tr)
@@ -120,9 +129,9 @@ summary(post_hdm)
 <br>
 <br>
 
-# OLS vs. (Post-)Lasso
+## OLS vs. (Post-)Lasso
 
-We replicate the analysis of Notebook *Supervised ML: Overfitting of OLS and value of training vs. test sample* and gradually add covariates to check how out-of-sample performance develops.
+We replicate the analysis of Notebook [Overfitting of OLS and value of training vs. test sample](https://mcknaus.github.io/assets/notebooks/SNB/SNB_OLS_in_vs_out_of_sample.nb.html) and gradually add covariates to check how out-of-sample performance develops.
 
 ```{r}
 # Container of the results
@@ -157,9 +166,9 @@ for (i in 2:p) {
   results_lasso[i-1,4] = var(y_te - cfe_te) + mean((cfe_te - temp_yhat_te)^2)
   
   # plasso
-  temp_plasso = plasso(x_tr[,2:(i+1)],y_tr)
-  temp_yhat_tr = predict(temp_plasso,xnew=x_tr[,2:(i+1)])$plasso
-  temp_yhat_te = predict(temp_plasso,xnew=x_te[,2:(i+1)])$plasso
+  temp_plasso = cv.plasso(x_tr[,2:(i+1)],y_tr)
+  temp_yhat_tr = predict(temp_plasso,newx=x_tr[,2:(i+1)])$plasso
+  temp_yhat_te = predict(temp_plasso,newx=x_te[,2:(i+1)])$plasso
   # Calculate the observable MSEs in training and test sample
   results_plasso[i-1,1] = mean((y_tr - temp_yhat_tr)^2) # in-sample MSE
   results_plasso[i-1,2] = mean((y_te - temp_yhat_te)^2) # out-of-sample MSE
@@ -185,12 +194,12 @@ Again, OLS explodes but the Lassos show a stable prediction performance regardle
 ```{r}
 df = data.frame(Estimator = c(rep("OLS",p-1),rep("Lasso",p-1),rep("Post-Lasso CV",p-1),rep("Post-Lasso hdm",p-1)),
                 Number.of.variables = c(2:p,2:p,2:p,2:p),
-                Obs.MSE.test = c(results_ols[,2],results_lasso[,2],results_plasso[,2],results_rlasso[,2]),
-                Oracle.MSE.test = c(results_ols[,4],results_lasso[,4],results_plasso[,4],results_plasso[,4]))
+                Obs.MSE.test = c(results_ols[,2], results_lasso[,2], results_plasso[,2], results_rlasso[,2]),
+                Oracle.MSE.test = c(results_ols[,4], results_lasso[,4], results_plasso[,4],results_plasso[,4]))
 
 ggplot(subset(df), aes(x=Number.of.variables,y=Obs.MSE.test,colour=Estimator)) + geom_line(size=1)
 
-ggplot(subset(df,df$Number.of.variables<70), aes(x=Number.of.variables,y=Obs.MSE.test,colour=Estimator)) + geom_line(size=1)
+ggplot(subset(df,df$Number.of.variables<70), aes(x=Number.of.variables,y=Obs.MSE.test,colour=Estimator))     + geom_line(size=1)  + geom_hline(yintercept = 0)
 ```
 
 It seems that Post-Lasso has a slight advantage over plain Lasso. However, this is DGP dependent and could be flipped in other settings.
@@ -198,7 +207,7 @@ It seems that Post-Lasso has a slight advantage over plain Lasso. However, this 
 <br>
 <br>
 
-## Take-away
+### Take-away
  
  - The penalization of coefficients ensures good out-of-sample performance $\Rightarrow$ Lasso works
  
@@ -206,17 +215,17 @@ It seems that Post-Lasso has a slight advantage over plain Lasso. However, this 
 <br>
  
  
-## Suggestions to play with the toy model
+### Suggestions to play with the toy model
 
 Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modifications before you run it and check whether the results are in line with your expectation. Some suggestions:
  
-- Modify DGP (change betas, change level of noise,introduce correlation between covariates, ...)
+- Modify DGP (change betas, change level of noise, introduce correlation between covariates, ...)
 
 - Modify seed
 
 - Change training and test sample size
 
-- Investigate the 1SE rule for cross-validation
+- Investigate the 1SE rule for cross-validated Lasso
  
 
  

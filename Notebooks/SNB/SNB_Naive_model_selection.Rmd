@@ -2,7 +2,7 @@
 title: "Causal ML: Why naive model selection fails"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -10,21 +10,22 @@ output:
     code_folding: show
 ---
 
+<br>
 
 Goals:
 
-- Illustrate why naive implementations of model selection using Lasso are problematic
+- Illustrate why naive implementations of model selection using Lasso is problematic
 
 <br>
 
 
-# Data generating process
+## Data generating process
 
 We consider a DGP with correlated variables:
 
 - $p\geq10$ covariates drawn from a multivariate normal distribution: $X \sim N(0,\Sigma)$, where we set in $\Sigma$ the diagonal entries (variance) to one and the off-diagonal entries (covariance) to 0.5.
 
-- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{CEF }f(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,2)$
+- The outcome model is $Y = \underbrace{\beta_0 + \beta_1 X_1 + ... + \beta_{10} X_{10}}_{\text{CEF }m(X)} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,2)$
 
 - We consider the following parameters $\beta_0 = 0$, $\beta_1 = 1$, $\beta_2 = 0.9$, ..., $\beta_9 = 0.2$, $\beta_{10} = 0.1$ such that the first 10 variables have a decreasing impact on the outcome and any further variables are just irrelevant noise with no true predictive power
 
@@ -32,9 +33,9 @@ We set $p=99$ and work with sample size $N=100$.
 
 ```{r, warning = F, message = F}
 # Load the packages required for later
-library(tidyverse)
-library(mvtnorm)
-library(glmnet)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("mvtnorm")) install.packages("mvtnorm", dependencies = TRUE); library(mvtnorm)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
 
 set.seed(1234) # For replicability
 
@@ -52,7 +53,7 @@ diag(sig) = var
 <br>
 
 
-# A causal question and different advice
+## A causal question and different advice
 
 You are interested in the causal effect of variable $X_1$ on outcome $Y$. You know that you should control for additional variables, but not really which specification to choose. You organize a meeting with some colleagues and ask for advice. You receive three different answers:
 
@@ -66,7 +67,7 @@ The remaining PhD students just finished a course in "Big Data, Machine Learning
 
 <br>
 
-# A simulation study to figure out what works
+## A simulation study to figure out what works
 
 We run a simulation study that draws 1000 random samples based on our DGP and stores the estimates resulting from the three proposed procedures (runs several minutes).
 
@@ -94,11 +95,12 @@ for (i in 1:repl) {
 }
 ```
 
-<br>
 
 Let's check the resulting estimator distributions of the proposed strategies:
 
-## Professor OLS
+<br>
+
+### Professor OLS
 
 Does it work? 
 
@@ -115,7 +117,7 @@ Why? (i) The model was chosen without looking at the data $\Rightarrow$ no probl
 
 <br>
 
-## Student 1's plain Lasso
+### Student 1's plain Lasso
 
 Does it work? 
 
@@ -134,7 +136,7 @@ paste("Share of replications where variable of interest not selected:",round( su
 
 <br>
 
-## Student 2's Lasso with unpenalized parameter of interest
+### Student 2's Lasso with unpenalized parameter of interest
 
 Does it work? 
 
@@ -145,7 +147,7 @@ df = data.frame(x=beta1_lasso_unpen)
 ggplot(df,aes(x=x)) + geom_histogram(bins=30,aes(y =..density..)) + 
   geom_vline(xintercept = c(beta[2],mean(df$x)),linetype=c('solid','dashed'))
 ```
-Why? Lasso is not aware of the causal problem at hand. Thus, it could use the omitted variable bias (OVB) for prediction purposes. Correcting OVB requires to build up regression coefficients of confounding variables, but this is costly because of the penalization. Leveraging the OVB in the unpenalized coefficient is "for free". On the other hand, this must not be the case. With a sufficiently low penalty term, it could work. But plain Lasso does not care about an unbiased parameter $\beta_1$.
+Why? Lasso is not aware of the causal problem at hand. Thus, it uses the omitted variable bias (OVB) for prediction purposes. Correcting OVB requires to build up regression coefficients of confounding variables, but this is costly because of the penalization. In contrast, leveraging the OVB in the unpenalized coefficient is "for free". On the other hand, this must not be the case. With a sufficiently low penalty term, it could work. But plain Lasso does not care about an unbiased parameter $\beta_1$.
 
 To understand this better, let's zoom into the coefficient path of the last replication:
 
@@ -165,7 +167,7 @@ Such things happen if the ML method is not "taught" that we are interest in a ca
 <br>
 <br>
 
-## Take-away
+### Take-away
  
  - If somebody tells us the correct model without looking at the data, life is good.
  
@@ -177,7 +179,7 @@ Such things happen if the ML method is not "taught" that we are interest in a ca
 <br>
  
  
-## Suggestions to play with the toy model
+### Suggestions to play with the toy model
 
 Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modifications before you run it and check whether the results are in line with your expectation. Some suggestions:
  
