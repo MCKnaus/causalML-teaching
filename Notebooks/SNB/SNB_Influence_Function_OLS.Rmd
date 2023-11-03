@@ -1,0 +1,559 @@
+---
+title: "Basics: Influence functions explained using OLS"
+subtitle: "Simulation notebook"
+author: "Michael Knaus"
+date: "`r format(Sys.time(), '%m/%y')`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+<br>
+
+Goals:
+
+- Influence functions play a crucial role for Double ML
+
+- This notebook illustrates what an influence function is and does within the familiar OLS setting
+
+- In particular it showcases how influence functions obeying the chain rule can be useful
+
+*Acknowledgements: I thank Henri Pfleiderer for his assistance in preparing this notebook.*
+
+<br>
+
+## OLS influence functions
+
+### Manually implement OLS
+
+Consider a data generating process (DGP) with: 
+
+$Y = \underbrace{\beta_0 + \beta_1 X}_{CEF} + U$, where $\beta_0 = 1$, $\beta_1 = 1/2$, $X \sim \mathcal{N}(0,1)$ and $U \sim uniform(-1,1)$.
+
+For illustration, we plot a random draw with $N=30$ and the true CEF:
+
+```{r, message = FALSE}
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("estimatr")) install.packages("estimatr", dependencies = TRUE); library(estimatr)
+if (!require("MASS")) install.packages("MASS", dependencies = TRUE); library(MASS)
+
+n = 30
+set.seed(1234)
+
+# Draw independent variable
+x = rnorm(n)
+hist(x)
+
+# Define population parameters
+b0 = 1
+b1 = 1/2
+
+# Define conditional expectation function
+cef = function(x){b0 + b1*x}
+
+# Generate outcome variable
+y = cef(x) + runif(n,-1,1)
+
+# Plot sample
+df = data.frame(x=x,y=y)
+ggplot(df) + stat_function(fun=cef,linewidth=1) + 
+            geom_point(aes(x=x,y=y),color="blue",alpha = 0.4)
+```
+
+Now, manually implement OLS. Recall that OLS has the closed form solution: $\hat{\beta} = (X'X)^{-1}X'Y$.
+```{r}
+# Add constant to covariates
+X = cbind(rep(1,n),x)
+colnames(X) = c("Constant","X")
+Q = solve(crossprod(X))
+betas = Q %*% t(X) %*% y
+betas
+```
+
+Let's verify this result with a pre-implemented OLS command
+```{r}
+# Check that it is identical to lm
+summary(lm_robust(y ~ x))
+```
+
+<br>
+
+### Recap: General Recipe for Influence Functions
+
+In the lecture we focus on linear score functions, which can be written as: 
+
+$$ \psi(O;\tilde{\theta}, \tilde{\eta}) = \tilde{\theta} \psi_a(O;\tilde{\eta}) + \psi _b(O;\tilde{\eta})$$
+
+with the true parameter values $\theta$ and $\eta$ satisfying the moment condition:
+
+$$E[\psi(O;\theta, \eta)] = \theta E[ \psi_a (O;\eta)] + E[\psi_b (O;\eta)] = 0 $$
+The solution for $\theta$ can then be found by rearranging as:
+
+$$ \theta = -\frac{E[\psi_b (O;\eta)]}{E[ \psi_a (O;\eta)]}$$
+The influence function for such estimators is defined as
+$$ \Psi(O;\theta,\eta) = -E \left[\frac{\partial \psi}{\partial \theta}\right]^{-1} \psi(O;\theta, \eta) = -E[\psi_a(O;\eta)] ^{-1} \psi(O;\theta, \eta) $$
+being a scaled version of the score, evaluated at the true parameter values. As discussed in the lecture, one can show the following result:
+
+$$ \frac{1}{\sqrt N} \left(\hat{\theta}- \theta \right) \xrightarrow[]{d} N(0, Var[\Psi(O;\theta,\eta)]) $$
+This means that influence functions can be used to calculate standard errors for the estimators: $se(\hat{\theta}) = \sqrt{\frac{Var[\Psi(O;\theta,\eta)]}{N}}$
+
+<br>
+
+### Influence Functions for OLS
+
+#### Calculating OLS Influence Functions
+
+Influence functions are very useful. To get to know them better, let's focus on the canonical OLS case. This should make you more comfortable to use them also in the Double ML settings where they play a crucial role. Recall that OLS has the hopefully familiar looking moment condition:
+
+$$  E[\underbrace{X'U}_{\psi}] = E[\underbrace{X'(Y-X\beta)}_{\psi}] = E[X' Y - X'X \beta] = E[X'Y] - E[X'X] \beta =  E[\underbrace{-X'X}_{\psi_a}] \beta + E[\underbrace{X'Y}_{\psi_b}] = 0 $$
+$\beta$ is then: 
+
+$$ \beta = E[X'X]^{-1} E[X'Y] $$
+This formulation can be used to obtain the influence function for individual $i$ as follows:
+
+$$ \Psi_i(X,Y;\beta) = E[\underbrace{X'X}_{=-\psi_a}]^{-1} \underbrace{X_i(Y_i-X_i'\beta)}_{=\psi}$$
+Note, that this is a vector with an influence function for each parameter. To see this consider $k$ explanatory variables (including a constant): 
+
+$$ \underset{k \times 1}{\Psi_i(X,Y;\beta)} = \underset{k \times k}{E[X'X]^{-1}} \underset{k \times 1}{X_i}\underset{1 \times 1}{(Y_i-X_i'\beta)}$$
+This expression can be calculated using the results from the simulation and (manual) estimation. Let's do this for the first individual. The expectation $E[X'_iX_i]^{-1}$ can be estimated by: $\left(\frac{1}{N} \sum_i X_i 'X_i\right)^{-1} = \left(\frac{1}{N} X'X\right)^{-1}$. Additionally, we need to replace the true $\beta$ by the estimate $\hat{\beta}$:
+
+```{r}
+# Calculate IFs for individual 1
+solve(crossprod(X) / n) %*% X[1,] %*% (y[1] - X[1,] %*% betas)
+```
+
+One compact way to calculate the IFs for all individuals at once is as follows:
+```{r}
+IF = (X * as.numeric(y - X %*% betas)) %*% solve(crossprod(X) / n)
+dim(IF)
+```
+
+We have created an $N \times k$ matrix with all influence functions and can check the theoretical properties numerically.
+
+Theoretically, the IFs should satisfy: $E[\Psi(X,Y;\beta)] = 0$. As a sanity check for our computation of the IFs, let's see whether the column means are actually zero:
+
+```{r}
+all.equal(as.numeric(colMeans(IF)),rep(0,ncol(X))) # check whether the means of the influence functions are equal to 0
+```
+<br>
+
+#### Influence Functions for standard errors
+
+The influence functions can be used to estimate the standard errors. The general expression $se\left(\hat{\theta}\right) = \sqrt{\frac{Var[\Psi(O;\theta,\eta)]}{N}}$ from the lecture slides changes slightly. As we are looking at a case where $Var[\Psi(X,Y;\beta,)]$ is a $k \times k$  covariance matrix. The standard errors for the elements of $\beta$ are the square root of the diagonal elements of $\frac{1}{N} Var\left[\Psi\left(X,Y;\hat{\beta}\right)\right]$ (Note: we have again replaced $\beta$ by the estimates $\hat{\beta}$, as - in practice - we don't know the true parameter values):
+
+```{r}
+sqrt(diag(var(IF)) / n)
+```
+
+
+We can compare these standard errors to the standard errors, we obtain by a pre-implemented command using the different available options. Although they are not exactly identical, they should are reasonably close: 
+```{r}
+lm_robust(y ~ x,se_type = "HC0")$std.error
+lm_robust(y ~ x,se_type = "HC1")$std.error
+lm_robust(y ~ x,se_type = "HC2")$std.error
+lm_robust(y ~ x,se_type = "HC3")$std.error
+```
+
+<br>
+
+#### Checking coverage rates
+
+Let's run a quick simulation to check the coverage rates of the different types of standard errors. The coverage rate calculate how often the true value is included in the confidence intervals (see [ring toss analogy](https://medium.com/@EpiEllie/having-confidence-in-confidence-intervals-8f881712d837) as an intuitive refresher). 
+
+The coverage rate can be used to evaluate the quality of the different standard errors. We would like to have nominal coverage, i.e. for a 95% confidence level it should happen in 95% of the replications, for a 90% confidence level in 90% of the replications, ...
+
+We do this for the estimate of the coefficient on $x$ in the regression above.
+```{r}
+rep = 1000 # number of replications for the simulation
+se_matrix = matrix(NA, nrow = rep, ncol = 5) # empty matrix to store the standard errors
+cover_matrix = matrix(NA, nrow = rep, ncol = 5) # matrix to store whether true value was covered
+colnames(se_matrix) = c("HC0", "HC1", "HC2", "HC3", "IF") # give meaningful names to the columns of the matrices
+colnames(cover_matrix) = c("HC0", "HC1", "HC2", "HC3", "IF")
+
+n = 100 # number of observations
+
+# True parameter values
+b0 = 1
+b1 = 1/2
+
+critical_value = qt(0.975, df = n-2)
+
+for (i in 1: rep){
+
+  # Draw independent variable
+  x = rnorm(n)
+  
+  # Generate outcome
+  y = b0 + b1 * x + runif(n,-1,1)
+  
+  # use the preimplemented commands, save the standard errors:
+  se_matrix[i,1] = lm_robust(y ~ x,se_type = "HC0")$std.error[2]
+  se_matrix[i,2] = lm_robust(y ~ x,se_type = "HC1")$std.error[2]
+  se_matrix[i,3] = lm_robust(y ~ x,se_type = "HC2")$std.error[2]
+  se_matrix[i,4] = lm_robust(y ~ x,se_type = "HC3")$std.error[2]
+  
+  # influence function, apply the formulas from above:
+  X = cbind(rep(1,n),x)
+  Q = solve(crossprod(X))
+  betas = Q %*% t(X) %*% y
+  IF = (X * as.numeric(y - X %*% betas)) %*% solve(crossprod(X) / n)
+  se_matrix[i,5] = sqrt(diag(var(IF)) / n)[2]
+  
+  # check the coverage; i.e. does the true value lie within the bounds of the 95% confidence interval?:
+  cover_matrix[i,1] = 1*((betas[2] - critical_value* se_matrix[i,1] < b1) & (betas[2] + critical_value*  se_matrix[i,1] > b1))
+  cover_matrix[i,2] = 1*((betas[2] - critical_value* se_matrix[i,2] < b1) & (betas[2] + critical_value*  se_matrix[i,2] > b1))
+  cover_matrix[i,3] = 1*((betas[2] - critical_value* se_matrix[i,3] < b1) & (betas[2] + critical_value*  se_matrix[i,3] > b1))
+  cover_matrix[i,4] = 1*((betas[2] - critical_value* se_matrix[i,4] < b1) & (betas[2] + critical_value*  se_matrix[i,4] > b1))
+  cover_matrix[i,5] = 1*((betas[2] - critical_value* se_matrix[i,5] < b1) & (betas[2] + critical_value*  se_matrix[i,5] > b1))
+}
+```
+
+Look at the coverage rates. As we used 95% confidence intervals, they should all be close to 95%
+```{r}
+colMeans(cover_matrix)
+```
+
+and they are (increasing $N$ gets them even closer).
+
+The different standard errors should also be highly correlated in the different replications
+```{r}
+cor(se_matrix)
+```
+and they are.
+
+(Bonus remark: Note that using the influence functions, one can exactly recover the classic (Stata) Huber-White SEs using a correction term.)
+```{r}
+IF = (X * as.numeric(y - X %*% betas)) %*% solve(crossprod(X) / n) * sqrt((n-1)/(n-2))
+sqrt(diag(var(IF)) / n)
+lm_robust(y ~ x,se_type = "HC1")$std.error
+```
+
+<br>
+
+### Intuition behind Influence Functions
+
+Intuitively, influence functions allow us to evaluate the influence of a single observation on an estimate (e.g., the coefficients in an OLS regression). To be more precise, the influence of observation $i$ on the estimation of the target parameter (here: $\beta$) is approximated by $\frac{\Psi_i(O; \theta, \eta)}{N}$ or here: $\frac{\Psi_i(X,Y; \hat{\beta})}{N}$. 
+
+To illustrate this, the following code snippet calculates two different measures and compares them: 
+
+1. For each observation $i$, we compute the OLS estimates with the sample *excluding* observation $i$. We then take the difference between the full sample estimates and this new estimate without individual $i$. This captures the influence of observation $i$ on the estimates.  
+2. The measure $\frac{\Psi_i(X,Y; \hat{\beta)}}{N}$
+
+If the influence functions work as they are supposed to, these individual-specific differences should be highly correlated.
+
+```{r}
+# Draw independent variable
+x = rnorm(n)
+
+# Generate outcome
+y = b0 + b1 * x + runif(n,-1,1)
+
+# influence function, apply the formulas from above:
+X = cbind(rep(1,n),x)
+Q = solve(crossprod(X))
+betas = Q %*% t(X) %*% y
+IF = solve(crossprod(X) / n) %*% t(X * as.numeric(y - X %*% betas))
+
+loools = matrix(NA,n,2)
+
+#Calculate coefficients w/o individual i
+for (i in 1:n) {
+  loools[i,] = solve(crossprod(X[-i,])) %*% t(X[-i,]) %*% y[-i]
+}
+```
+
+Plot the 2 measures against each other:
+```{r}
+# plot diff between full sample and leave-on-out against the IF
+plot(betas[1] - loools[,1], IF[1,] / n)
+
+plot(betas[2] - loools[,2], IF[2,] / n)
+```
+The difference between the coefficients with and without each observation are very similar, though not identical) to the influence function (divided by $N$). This illustrates that the influence function approximates the influence of each individual observation on the estimates.
+
+<br>
+
+## Chain rule
+
+We learned in the lecture that influence functions obey a chain rule that allows to derive new influence function of composite parameters once we know the influence function of its components.
+
+### Use case 1: Testing for omitted variable bias
+
+Consider the following stylized DGP. There is an outcome $Y$, a continuous treatment $W$, and a confounding variable $X$:
+$$   Y=  0.5 W + X + U$$
+
+
+with $U_1 \sim \mathcal{N}(0,1)$ 
+and:
+$$ \begin{align}
+ [W, X]'&\sim \mathcal{N}\left([0~~0]',\left[ \begin{array}
+{rrr}
+1 & \rho  \\
+\rho & 1 
+\end{array}\right]\right)
+\end{align} $$
+
+
+i.e. the constant treatment effect is 0.5.
+
+<br>
+
+#### No confounding
+
+First, simulate the data set as described above with $\rho = 0$, i.e. no confounding:
+
+```{r, message = FALSE, warning = FALSE}
+n = 1000
+mu = c(0,0)
+rho = 0
+sigma = matrix(c(1,rho,rho,1), nrow = 2)
+draw = mvrnorm(n, mu, sigma)
+W = draw[,1]
+X =  draw[,2]
+Y = 0.5 * W + X + rnorm(n)
+```
+
+
+Let's run the regression of $Y$ on $W$ and calculate the influence functions. This is done exactly the same way as above.
+
+```{r}
+# run a regression using the pre-implemented command:
+summary(lm_robust(Y~ W))
+
+# Calculate the influence functions. In contrast to the code above, here we directly construct the matrix X using model.matrix(lm_robust(Y~ W)) 
+# and the OLS coefficients as a vector with matrix(lm_robust(Y~ W)$coefficients) in the same line of code
+IF_OVB = (model.matrix(lm_robust(Y~ W)) * as.numeric(Y - model.matrix(lm_robust(Y~ W)) %*% matrix(lm_robust(Y~ W)$coefficients))) %*% solve(crossprod(model.matrix(lm_robust(Y~ W))) / n)
+dim(IF_OVB)
+```
+
+We can also run a regression with $X$ included as a control variable and calculate the Influence Functions:
+
+```{r}
+summary(lm_robust(Y~ W+X))
+
+IF_X = (model.matrix(lm_robust(Y~ W+X)) * as.numeric(Y - model.matrix(lm_robust(Y~ W+X)) %*% matrix(lm_robust(Y~ W+X)$coefficients))) %*% solve(crossprod(model.matrix(lm_robust(Y~ W+X))) / n)
+```
+
+The two estimated coefficients of the treatment (call them $\hat{\tau}_{OVB}$ and $\hat{\tau}_X$) look quite similar in the two regressions, but we would like to be able to calculate standard errors for their difference $\Delta = \tau_{OVB} - \tau_{X}$ and test for statistical significance. As influence functions obey the chain rule, the influence function for $\Delta$ can be obtained as:
+
+$$ \Psi_{\Delta} = \frac{\partial \Delta}{\partial \tau_{OVB}} \Psi_{\tau_{OVB}} + \frac{\partial \Delta}{\partial \tau_{X}} \Psi_{\tau_{X}} = \Psi_{\tau_{OVB}}  - \Psi_{\tau_{X}}$$:
+
+This is very easily done, since we already calculated $\Psi_{\tau_{OVB}}$ and $\Psi_{\tau_{X}}$ when running the two separate regressions:
+
+```{r}
+# display the difference:
+Delta = lm_robust(Y ~ W)$coefficients[2] - lm_robust(Y ~ W + X)$coefficients[2]
+print(paste0("Delta: ", Delta))
+
+IF_Delta = IF_OVB[,2] - IF_X[,2] # Influence Function for Delta
+
+se_Delta = sqrt(var(IF_Delta) / length(IF_Delta))
+t_stat = Delta/se_Delta # t-statistic
+print(paste0("t-statistic: ", t_stat))
+p_val = 2*(1-pnorm(abs(Delta/se_Delta))) # p value
+print(paste0("p-value: ", p_val))
+```
+The p-value shows that the difference is not significantly different from zero on any conventional level of significance. There is no significant omitted variable bias. As $W$ and $X$ are independent, this is what we expected.
+
+<br>
+
+#### Confounding
+
+Now, let's do the same again, but using $\rho = 0.7$:
+
+```{r, message = FALSE, warning = FALSE}
+rho = 0.7
+sigma = matrix(c(1,rho,rho,1), nrow = 2)
+draw = mvrnorm(n, mu, sigma)
+W = draw[,1]
+X =  draw[,2]
+Y = 0.5 * W + X + rnorm(n)
+```
+
+
+This introduces omitted variable bias as we can observe by running OLS once without controlling for $X$ 
+
+```{r}
+summary(lm_robust(Y ~ W))
+
+IF_OVB = (model.matrix(lm_robust(Y~ W)) * as.numeric(Y - model.matrix(lm_robust(Y~ W)) %*% matrix(lm_robust(Y~ W)$coefficients))) %*% solve(crossprod(model.matrix(lm_robust(Y~ W))) / n)
+```
+
+and once with controlling for $X$:
+
+```{r}
+summary(lm_robust(Y ~ W + X))
+
+IF_X = (model.matrix(lm_robust(Y~ W+X)) * as.numeric(Y - model.matrix(lm_robust(Y~ W+X)) %*% matrix(lm_robust(Y~ W+X)$coefficients))) %*% solve(crossprod(model.matrix(lm_robust(Y~ W+X))) / n)
+```
+
+To check whether the difference of the estimates from the two regressions are statistically significantly different from zero, we will again use the composite influence function $\Psi_{\Delta}$:
+
+```{r}
+# display the difference:
+Delta = lm_robust(Y ~ W)$coefficients[2] - lm_robust(Y ~ W + X)$coefficients[2]
+print(paste0("Delta: ", Delta))
+
+IF_Delta = IF_OVB[,2] - IF_X[,2] # Influence Function for Delta
+
+se_Delta = sqrt(var(IF_Delta) / length(IF_Delta))
+t_stat = Delta/se_Delta # t-statistic
+print(paste0("t-statistic: ", t_stat))
+p_val = 2*(1-pnorm(abs(Delta/se_Delta))) # p value
+print(paste0("p-value: ", p_val))
+```
+The difference is significantly different from zero. In this case, as expected, there is a significant omitted variable bias.
+
+<br>
+
+### Use case 2: Standard errors for fitted values using influence functions
+
+Assume that after running OLS we want to obtain standard errors for the fitted values for individual $i$ 
+$$\hat{Y}_i = X_i \hat{\beta} = X_{i,1} \hat{\beta_1} + ... + X_{i,k} \hat{\beta_k}$$ 
+
+Again, the chain rule comes in handy. We can write the influence function for the prediction $\hat{Y_i}$, i.e. $\Psi_{\hat{Y_i}}$ as:
+
+$$ \begin{equation} \Psi_{\hat{Y_i}} = \frac{\partial \hat{Y_i}}{\partial \hat{\beta_1}} \Psi_{\hat{\beta_1}} + ... + \frac{\partial \hat{Y_i}}{\partial \hat{\beta_k}} \Psi_{\hat{\beta_k}} = X_{i,1} \Psi_{\hat{\beta_1}} + ... + X_{i,k} \Psi_{\hat{\beta_k}} = X_i' \Psi^{'}_{\hat{\beta}} \end{equation} $$
+
+The matrix $\underset{N \times k}{\Psi_{\hat{\beta}}}$ is what we already calculated above. It contains the values of the influence function for all individuals and all elements of $\beta$. To demonstrate how we can calculate standard errors for $\hat{Y_i}$, we run the very simple regression from the beginning and in a first step calculate the influence functions for the estimated coefficients and all individuals. The procedure is exactly the same as above:
+
+```{r, message = FALSE}
+x_seq = seq(-3,3,0.01)
+n = length(x_seq)
+
+# Draw independent variable
+x = rnorm(n)
+
+# True parameter
+b0 = -1
+b1 = 1/2
+
+# Generate outcome
+y = b0 + b1 * x + runif(n,-1,1)
+
+# Add constant
+X = cbind(rep(1,n),x)
+
+# Manually obtain the OLS coefficients:
+Q = solve(crossprod(X))
+betas = Q %*% t(X) %*% y
+
+# And get the influence functions for all individuals
+IF = (X * as.numeric(y - X %*% betas)) %*% solve(crossprod(X) / n)
+```
+
+We now want to obtain the influence functions not for the coefficients, but for fitted values with different values of $X_i$. In particular, we calculate standard errors for several fitted values, and use a sequence from -3 to 3 as values for $X_{i,2}$. Let's denote this sequence, which consists of $m$ values by $\tilde{x}$. 
+
+The vector of fitted values will thus be: 
+$$\underset{m \times 1}{\hat{Y}} = \underset{m \times 1}{\hat{\beta_1}} + \hat{\beta_2} \cdot \underset{m \times 1}{\tilde{x}} = \underset{m \times k}{\tilde{X}} \cdot \underset{k \times 1}{\hat{\beta}} $$ 
+
+
+$\tilde{X}$ is a matrix with the first column consisting of ones and the sequence $\tilde{x}$ in the second column. For each of the $m$ fitted values we can now calculate the values of the influence functions (again, remember: one for each individual) as we have seen above. We can do this for all the $m$ values of the sequence $\tilde{x}$ and write it very concisely as:
+
+$$ \underset{m \times N}{\Psi_{\hat{y}}} = \underset{m \times k} {\tilde{X}} \underset{k\times N}{\Psi^{'}_{\hat{\beta}}}$$. 
+
+The following code snippet calculates the influence function for these fitted values:
+
+```{r}
+X_seq  = cbind(rep(1, length(x_seq)), x_seq) # construct the matrix, which in the text is called big X tilde
+
+# Get the m x 1 vector of predictions y_hat using the sequence from -3 to 3 as values for x:
+y_hat = X_seq %*% betas
+
+# Influence function for the predictions, using the influence functions for the coefficients:
+IF_yhat = X_seq %*% t(IF)
+```
+
+Let's get the standard errors and calculate the 95%-confidence intervals at the different $\tilde{x}$ and illustrate this graphically:
+
+```{r}
+# Standard errors:
+ses = sqrt(diag(var(t(IF_yhat))) / n) # just like we did it above
+
+# manually compute the bounds of the confidence interval:
+CI_lower = y_hat - critical_value*ses
+CI_upper = y_hat + critical_value*ses
+
+# plot
+tibble(x_seq, y_hat, CI_lower, CI_upper, x , y) %>% ggplot(aes(x = x_seq, y = y_hat))+
+  geom_line(color = "red", linetype = "solid")+
+  geom_line(aes(x = x_seq, y = CI_lower), color = "red", linetype = "dashed")+
+  geom_line(aes(x = x_seq, y = CI_upper), color = "red", linetype = "dashed")+
+  geom_point(aes(x = x, y  =y))+
+  xlab("x")+
+  ylab("")
+```
+
+
+In a last step, let's check whether we did this correctly using the coverage rate, for the grid of $x$-values:
+
+```{r}
+R = 1000 # number of replications
+n = 100 # number of observations
+
+# True parameters (unchanged)
+b0 = -1
+b1 = 1/2
+
+critical_value = qt(0.975, df = n-2)
+
+# "True" (expected) y:
+y_exp = b0 +b1*x_seq # this is the "true" quantity we are estimating
+
+coverage_matrix = matrix(NA, ncol = length(x_seq), nrow =  R)
+
+for (i in 1:R){
+  x = rnorm(n)
+  
+  # Generate outcome
+  y = b0 + b1 * x + runif(n,-1,1)
+  
+  # Add constant
+  X = cbind(rep(1,n),x)
+  
+  # Manually obtain the OLS coefficients:
+  Q = solve(crossprod(X))
+  betas = Q %*% t(X) %*% y
+  
+  # And get the influence functions for all individuals
+  IF = (X * as.numeric(y - X %*% betas)) %*% solve(crossprod(X) / n)
+  
+  y_hat = X_seq %*% betas # the predictions
+  
+  # Influence function for the predictions:
+  IF_yhat = X_seq %*% t(IF)
+  
+  # standard errors:
+  ses = sqrt(diag(var(t(IF_yhat))) / n)
+  
+  coverage_matrix[i,] = 1*(((y_hat - critical_value* ses) <= y_exp) & ((y_hat + critical_value* ses) > y_exp)) # for all observations: check whether the confidence interval
+  # includes the true value, save as 0 or 1
+}
+
+coverage_rates = colMeans(coverage_matrix) # get the coverage rates at all different values of x
+
+# plot the coverage rates over the grid of x
+tibble(x_seq, coverage_rates) %>% ggplot(aes(x = x_seq, y = coverage_rates))+
+  geom_hline(yintercept=(0.95), linetype="dashed")+ 
+  geom_line(colour = "red", linewidth = 1) +
+  ylim(c(0,1)) +
+  geom_hline(yintercept=c(0,1)) +
+  labs(
+    x="x",
+    y="Coverage",
+    title="Model coverage",
+    caption="Based on simulated data"
+  ) +
+  theme_bw()
+```
+
+This looks as expected. For each value of $\tilde{x}$, the 95% confidence interval on the fitted value includes the true value in roughly 95% of the cases.
+
+<br>
+
+### Conclusion
+
+Influence Functions are very useful. We can use them to get standard errors for the coefficients, the fitted values, or even to perform statistical tests on compositional parameters like differences between coefficients from different regressions. Additionally, they are informative about the influence of each observations on the estimates.
+
