@@ -2,7 +2,7 @@
 title: "Causal ML: Double Selection"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -15,13 +15,17 @@ Goals:
 
 - Illustrate Double Selection
 
+- Illustrate how single selection fails to produce unbiased estimates and invalid inference
+
+- Illustrate how even Double Selection fails with dense DGPs
+
 <br>
 
 
 
-# Double Selection
+## Bias and MSE
 
-## Same coefficients for treatment and outcome
+### Same coefficients for treatment and outcome
 
 Consider the following DGP:
 
@@ -29,16 +33,18 @@ Consider the following DGP:
 
 - The treatment model is $W = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \epsilon$, where $X_j$ is the $j$-th column of $X$ and $\epsilon \sim N(0,1)$
 
-- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \varepsilon$, where $X_j$ is the $j$-th column of $X$ and $\varepsilon \sim N(0,4)$
+- The outcome model is $Y = \theta W +  1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \varepsilon$, where $X_j$ is the $j$-th column of $X$ and $\varepsilon \sim N(0,4)$
 
-This means, we are in a sparse setting where the same few variables have the same impact on treatment and outcome, but the treatment is easier to estimate (lower noise).
+This means, we are in a sparse setting where the same few variables have the same impact on treatment and outcome, but the treatment is easier to estimate (lower noise level).
+
+Furthermore, we set the treatment effect $\theta = 0$ such that the treatment is not effective. This means that plugging the treatment into the outcome equation produces a reduced form of $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + \varepsilon$. In the notation of the slides we have therefore that $\beta = \pi$.
 
 
 ```{r, warning = F, message = F}
-library(hdm)
-library(mvtnorm)
-library(tidyverse)
-library(estimatr)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("mvtnorm")) install.packages("mvtnorm", dependencies = TRUE); library(mvtnorm)
+if (!require("estimatr")) install.packages("estimatr", dependencies = TRUE); library(estimatr)
 
 set.seed(1234)
 
@@ -48,13 +54,13 @@ p = 100
 n_rep = 1000
 
 # Define and plot parameters
-theta = 1
+theta = 0
 delta = c(seq(1,0.1,-0.1),rep(0,p-10))
-pi = c(seq(1,0.1,-0.1),rep(0,p-10))
+beta = delta
 cov_mat = toeplitz(0.7^(0:(p - 1)))
 plot(delta)
 abline(h = 0)
-plot(pi)
+plot(beta)
 abline(h = 0)
 ```
 
@@ -66,7 +72,7 @@ Now, we get a first draw and check which variables are selected when running Pos
 # Generate one draw
 x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
 w = x %*% delta + rnorm(n,0,1)
-y = theta*w + x %*% pi + rnorm(n,0,4)
+y = theta*w + x %*% beta + rnorm(n,0,4)
 
 # Select variables in outcome regression
 sel_y = rlasso(x,y)
@@ -97,7 +103,7 @@ x_sel_union = x[,sel_y$beta != 0 | sel_w$beta != 0]
 summary(lm_robust(y ~ w + x_sel_union))
 ```
 
-This is exactly the result that the `rlassoEffect` command of the `hdm` package would provide. The only difference being that it uses slightly different robust standard errors:
+Note that the coefficient on `w` is exactly the result the `rlassoEffect` command of the `hdm` package provides. The only difference being that it uses slightly different robust standard errors:
 
 ```{r}
 ds = rlassoEffect(x,y,w)
@@ -113,7 +119,7 @@ colnames(results) = c("Single","Double")
 for (i in 1:n_rep) {
   x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
   w = x %*% delta + rnorm(n,0,1)
-  y = theta*w + x %*% pi + rnorm(n,0,4)
+  y = theta*w + x %*% beta + rnorm(n,0,4)
 
   sel_y = rlasso(x,y)
   x_sel_y = x[,sel_y$beta != 0]
@@ -133,28 +139,28 @@ cat("\nMSE:\n")
 round(colMeans((results-theta)^2),4)
 ```
 
-The single selection algorithm is a little bit biased but the variance is smaller. This is reflected in the smaller MSE $\Rightarrow$ The unbiasedness of Double Selection comes at the cost of more variance. However, given that the same variables are important in both equations, the probability to miss a variables that is very important in the treatment equation is relatively small anyways. This is going to change in the next round.
+The single selection algorithm is clearly biased but the variance is smaller. This is reflected in the smaller MSE $\Rightarrow$ The unbiasedness of Double Selection comes at the cost of more variance. However, given that the same variables are important in both equations, the probability to miss variables that are very important in the treatment equation is still relatively small. This is going to change in the next round.
 
 <br>
 
 
-## Asymmetric coefficients for treatment and outcome
+### Asymmetric coefficients for treatment and outcome
 
 We keep everything the same but reverse the order of the non-zero coefficients in the treatment equation:
 
-- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + \epsilon$, where $X_j$ is the $j$-th column of $X$ and $\epsilon \sim N(0,1)$
 
-- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,4)$
+- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} +  \varepsilon$, where $X_j$ is the $j$-th column of $X$ and $varepsilon \sim N(0,4)$
 
 Now missing, e.g., $X_{10}$ because of its small coefficient in $Y$ should have more severe consequences.
 
 ```{r}
 # Define and plot parameters
 delta = c(seq(0.1,1,0.1),rep(0,p-10))
-pi = c(seq(1,0.1,-0.1),rep(0,p-10))
+beta = c(seq(1,0.1,-0.1),rep(0,p-10))
 plot(delta)
 abline(h = 0)
-plot(pi)
+plot(beta)
 abline(h = 0)
 ```
 
@@ -166,7 +172,7 @@ colnames(results) = c("Single","Double")
 for (i in 1:n_rep) {
   x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
   w = x %*% delta + rnorm(n,0,1)
-  y = theta*w + x %*% pi + rnorm(n,0,4)
+  y = theta*w + x %*% beta + rnorm(n,0,4)
 
   sel_y = rlasso(x,y)
   x_sel_y = x[,sel_y$beta != 0]
@@ -186,29 +192,30 @@ cat("\nMSE:\n")
 round(colMeans((results-theta)^2),4)
 ```
 
-The bias of single selection is now more severe and visible. However, in terms of MSE it still performs better than Double Selection. Usually we are willing to accept such a loss in precision to get an unbiased estimate of the causal parameter of interest, so this is fine.
+The MSE of single selection is only one fourth of the bias of double selection, driven by visibly smaller variance. However, it is also clearly biased while double selection shows negligible bias and we like that more than small MSE when it comes to our target parameter. 
 
+This illustrates a crucial difference between supervised ML and causal inference. In the former we are happy if something is predicted with a lower MSE, even if this means to accept some bias. In contrast, for causal inference we usually strive for an unbiased estimate of the causal target parameter, even if this means to accept much higher variance $\Rightarrow$ Higher MSE
 
 <br>
 
 
 ### Dense DGP
 
-We keep the above DGP but now all variables have at least some impact $\Rightarrow$ dense setting:
+Now let's make life hard even for double selection. We keep the above DGP but now all variables have at least some impact $\Rightarrow$ dense setting:
 
-- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,1)$
+- The treatment model is $W = 0.1 X_1 + 0.2 X_2 + ... + 0.9 X_{9} + 1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + \epsilon$, where $X_j$ is the $j$-th column of $X$ and $\epsilon \sim N(0,1)$
 
-- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + e$, where $X_j$ is the $j$-th column of $X$ and $e \sim N(0,4)$
+- The outcome model is $Y = 1 X_1 + 0.9 X_2 + ... + 0.2 X_{9} + 0.1 X_{10} + 0.1 X_{11} + ... + 0.1 X_{100} + \varepsilon$, where $X_j$ is the $j$-th column of $X$ and $\varepsilon \sim N(0,4)$
 
-This is a setting where the approximate sparsity assumption is not be valid.
+This is a setting where approximate sparsity is not valid.
 
 ```{r}
 # Define and plot parameters
 delta = c(seq(0.1,1,0.1),rep(0.1,p-10))
-pi = c(seq(1,0.1,-0.1),rep(0.1,p-10))
+beta = c(seq(1,0.1,-0.1),rep(0.1,p-10))
 plot(delta, ylim = c(0, 1))
 abline(h = 0)
-plot(pi, ylim = c(0, 1))
+plot(beta, ylim = c(0, 1))
 abline(h = 0)
 ```
 
@@ -220,7 +227,7 @@ colnames(results) = c("Single","Double")
 for (i in 1:n_rep) {
   x = rmvnorm(n = n, mean = rep(0, p), sigma = cov_mat)
   w = x %*% delta + rnorm(n,0,1)
-  y = theta*w + x %*% pi + rnorm(n,0,4)
+  y = theta*w + x %*% beta + rnorm(n,0,4)
 
   sel_y = rlasso(x,y)
   x_sel_y = x[,sel_y$beta != 0]
@@ -240,13 +247,127 @@ cat("\nMSE:\n")
 round(colMeans((results-theta)^2),4)
 ```
 
-Double Selection breaks down in the dense setting and becomes worse than single selection also in terms of bias.
-
+Double Selection seems to breaks in the dense setting and becomes worse than single selection also in terms of bias. So should we go for single selection if we suspect that we are in a dense setting? Not if we are interested in doing statistical inference as we see in the next section.
 
 <br>
 <br>
 
-## Take-away
+
+## Coverage rates
+
+The previous section looked at bias and MSE. Depending on whether you are convinced or not that bias is bad, you might come to the conclusion the Double Selection is overkill and not really required. However, in the following we will see that statistical inference after single selection is very problematic.
+
+To make the point, we run a simulation to check the coverage rates of the confidence intervals for single and double selection. The coverage rate calculate how often the true value is included in the confidence intervals (see [ring toss analogy](https://medium.com/@EpiEllie/having-confidence-in-confidence-intervals-8f881712d837) as an intuitive refresher). 
+
+The coverage rate can be used to evaluate the quality of the different standard errors. We would like to have nominal coverage, i.e. for a 95% confidence level it should happen in 95% of the replications, for a 90% confidence level in 90% of the replications, ...
+ 
+ 
+```{r}
+set.seed(1234)
+
+# Simulation settings
+n = 100       # Sample size
+p = 100       # Number of covariates
+n_rep = 1000  # Number of replications
+theta = 0     # True treatment effect
+
+sign_flip = rep(c(1,-1),p/2)
+
+# DGP specifications
+cov_mat = toeplitz(0.7^(0:(p - 1)))
+sparsity_patterns = list(
+  same = rbind(c(seq(1, 0.1, -0.1), rep(0, p-10)),
+               c(seq(1, 0.1, -0.1), rep(0, p-10))),
+  asymmetric = rbind(c(seq(0.1, 1, 0.1), rep(0, p-10)),
+                     c(seq(1, 0.1, -0.1), rep(0, p-10))),
+  dense = rbind(c(seq(0.1, 1, 0.1), rep(0.1, p-10)),
+                     c(seq(1, 0.1, -0.1), rep(0.1, p-10)))
+)
+
+# Function to simulate data and return coverage
+simulate_coverage = function(delta, beta) {
+  effect = coverage = matrix(NA, n_rep, 2)
+  colnames(effect) = colnames(coverage) = c("Single", "Double")
+  
+  for (i in 1:n_rep) {
+    x = rmvnorm(n, mean = rep(0, p), sigma = cov_mat)
+    w = x %*% delta + rnorm(n, 0, 1)
+    y = theta * w + x %*% beta + rnorm(n, 0, 4)
+    
+    # Single selection
+    sel_y = rlasso(x, y)
+    model_single = lm_robust(y ~ w + x[, sel_y$beta != 0])
+    effect[i,1] = model_single$coefficients[2]
+    ci_single = confint(model_single)["w", ]
+    
+    # Double selection
+    sel_w = rlasso(x, w)
+    union_selection = sel_y$beta != 0 | sel_w$beta != 0
+    model_double = lm_robust(y ~ w + x[, union_selection])
+    effect[i,2] = model_double$coefficients[2]
+    ci_double = confint(model_double)["w", ]
+    
+    # Check coverage
+    coverage[i, 1] = theta >= ci_single[1] & theta <= ci_single[2]
+    coverage[i, 2] = theta >= ci_double[1] & theta <= ci_double[2]
+  }
+  
+  list(bias = colMeans(effect)-theta, mse = colMeans((effect-theta)^2), coverage = colMeans(coverage))
+}
+
+# Run simulations for each DGP
+results_bias = results_mse = results_cr = tibble(
+  DGP = c("Same", "Asymmetric", "Dense"),
+  Single = numeric(length(sparsity_patterns)),
+  Double = numeric(length(sparsity_patterns))
+)
+
+for (i in seq_along(sparsity_patterns)) {
+  delta = sparsity_patterns[[i]][1,]
+  beta = sparsity_patterns[[i]][2,]
+  run = simulate_coverage(delta, beta)
+  results_bias[i, 2:3] = t(run$bias)
+  results_mse[i, 2:3] = t(run$mse)
+  results_cr[i, 2:3] = t(run$coverage)
+}
+
+print(results_cr)
+```
+
+```{r}
+# Ensure the order of DGP is maintained in the plot
+results_cr$DGP = factor(results_cr$DGP, levels = c("Same", "Asymmetric", "Dense"))
+
+# Convert data from wide to long format for ggplot2
+results_long = pivot_longer(results_cr, cols = c(Single, Double), names_to = "Selection", values_to = "CoverageRate")
+
+# Create the bar plot
+ggplot(results_long, aes(x = DGP, y = CoverageRate, fill = Selection)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7)) + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  scale_fill_brewer(palette = "Pastel1", direction = -1) + 
+  labs(title = "Coverage Rates for Single vs Double Selection", 
+       y = "Coverage Rate (%)", 
+       x = "DGP Type", 
+       fill = "Selection Method") + 
+  theme_minimal() + 
+  theme(legend.position = "top") + 
+  geom_hline(yintercept = c(0,0.95,1), linetype = c("solid","dashed","solid"), color = c("black","red","black"), linewidth = 0.7) +
+  geom_text(aes(label=scales::percent(CoverageRate), group=Selection), 
+            position=position_dodge(width = 0.7), vjust=-0.25)
+```
+
+Double selection shows nominal coverage in the two sparse settings. However, confidence intervals of single selection undercover substantially in all settings. This means we would find significant effects more often than we should. We don't like that. Even in the dense DGP where double selection showed higher bias, its coverage rate is closer to the nominal rate: 
+
+- Single selection is wrong and relatively confident about it.
+
+- Double selection is even more wrong, but at least reflecting its uncertainty better.
+
+With double selection we wrongly reject the correct null hypothesis of no effect in roughly 35% of the replications why we would expect 5%. Single selection on the other hand rejects in over 90% of the replications. This means, we would find nearly always a significant effect that is not there. We don't like this.
+
+<br>
+
+### Take-aways
  
  - Single selection produces biased estimates even in sparse settings.
  
@@ -255,20 +376,21 @@ Double Selection breaks down in the dense setting and becomes worse than single 
  - The price to pay is a higher variance compared to the single selection estimator.
  
  - Double Selection blows up if the world is not sparse $\Rightarrow$ we have to "bet on sparsity", which is harder to swallow the smaller the sample size
- 
+
+ - However, if we are interested in statistical inference about the causal target parameter, double selection is still crucial. Especially because statistical inference is more reliable, even in cases where approximate sparsity does not hold.
  
 <br>
-<br>
  
- 
-## Suggestions to play with the toy model
+### Suggestions to play with the toy model
 
 Feel free to play around with the code. This is useful to sharpen and challenge your understanding of the methods. Think about the consequences of a modifications before you run it and check whether the results are in line with your expectation. Some suggestions:
  
 - Modify DGP (correlation of covariates, coefficients, noise term, ...)
 
-- Increase the number of observations
+- Vary the number of observations
 
 - Implement variable selection mimicking what researchers might do (e.g. based on t-tests)
+
+- Change the values of theta to, e.g. 1 or -1. Explain your observations. (Hint: think about the reduced form)
 
  
