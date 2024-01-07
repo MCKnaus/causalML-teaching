@@ -18,7 +18,7 @@ The slides include links to a variety of compiled html **R notebooks**. Their Rm
 4. [**Estimating constant effects: Double Selection to Double ML**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML4_DS_PLR.pdf)
 5. [**Average treatment effect estimation: AIPW-Double ML**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML5_AIPW.pdf)
 6. [**Double ML - the general recipe**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML6_DML.pdf)
-7. [**Predicting effects**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML7_HTE.pdf)
-8. [**Heterogeneous effects with inference**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML8_HTE2.pdf)
+7. [**Heterogeneous effects**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML7_HTE.pdf)
+8. [**Heterogeneous effects: validation and description**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML8_HTE2.pdf)
 9. [**Policy learning**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML9_PL.pdf)
 
