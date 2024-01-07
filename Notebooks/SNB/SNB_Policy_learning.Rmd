@@ -2,7 +2,7 @@
 title: "Causal ML: Offline policy learning"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -22,7 +22,7 @@ Goals:
 
 # Nonlinear heterogeneity and discrete policy rule
 
-We revisit the DGP from Notebooks *SNM_AIPW_DAML* and *SNB_GATE* with zero ATE but highly nonlinear effect heterogeneity:
+We revisit the DGP from Notebooks [Causal ML: AIPW Double ML (ATE)](https://mcknaus.github.io/assets/notebooks/SNB/SNB_AIPW_DML.nb.html) and [Causal ML: Group Average Treatment Effects](https://mcknaus.github.io/assets/notebooks/SNB/SNB_GATE.nb.html) with zero ATE but highly nonlinear effect heterogeneity:
 
 - $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
 
@@ -30,24 +30,26 @@ We revisit the DGP from Notebooks *SNM_AIPW_DAML* and *SNB_GATE* with zero ATE b
 
 - The potential outcome model of the controls is $Y(0) = \underbrace{cos(X_1+1/2\pi)}_{m_0(X)}+ \varepsilon$, with $\varepsilon \sim N(0,1)$
 
-- The potential outcome model of the treated is $\underbrace{sin(X_1)}_{m_0(X)} + \varepsilon$, with $\varepsilon \sim N(0,1)$
+- The potential outcome model of the treated is $\underbrace{sin(X_1)}_{m_1(X)} + \varepsilon$, with $\varepsilon \sim N(0,1)$
 
 - The treatment effect function is $\tau(X) = sin(X_1) - cos(X_1+1/2\pi)$
 
-This means that some simulated individuals benefit from the treatment (assuming that higher outcome is better) and some do not. The optimal policy is given by $\pi^*(x) = 1[X_1 > 0]$ and should be recovered by the methods we discussed in the lecture.
+This means that some simulated individuals benefit from the treatment (assuming that higher outcome is better) and some do not. The optimal policy is given by $\pi^*(x) = \mathbf{1}[X_1 > 0]$ and should be recovered by the methods we discussed in the lecture.
 
 
 ```{r, warning = F, message = F}
-# Load packages
-library(rpart)
-library(rpart.plot)
-library(causalDML)
-library(glmnet)
-library(ggplot2)
-library(tidyverse)
-library(patchwork)
-library(policytree)
-library(ggridges)
+if (!require("rpart")) install.packages("rpart", dependencies = TRUE); library(rpart)
+if (!require("rpart.plot")) install.packages("rpart.plot", dependencies = TRUE); library(rpart.plot)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("patchwork")) install.packages("patchwork", dependencies = TRUE); library(patchwork)
+if (!require("policytree")) install.packages("policytree", dependencies = TRUE); library(policytree)
+if (!require("ggridges")) install.packages("ggridges", dependencies = TRUE); library(ggridges)
+if (!require("DiagrammeR")) install.packages("DiagrammeR", dependencies = TRUE); library(DiagrammeR)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
 
 set.seed(1234)
 
@@ -159,7 +161,7 @@ paste0("R(pi^tree): ", round(regret_tree,1))
 
 ### Classification via logistic Lasso
 
-Let us compare this to a different classification algorithm - the logistic Lasso. This can be implemented with the *glmnet* package.
+Let us compare this to a different classification algorithm, the logistic Lasso. This can be implemented with the *glmnet* package.
 
 
 ```{r}
@@ -189,15 +191,15 @@ paste0("Q(pi^lasso): ", round(Q_pi_hat_lasso,1))
 paste0("R(pi^lasso): ", round(regret_lasso,1))
 ```
 
-In this draw the Lasso achieves a better classification accuracy than the regression tree and this is also reflected in a lower regret
+In this draw the Lasso achieves a better classification accuracy than the regression tree and this is also reflected in a lower regret.
 
 <br>
 
 ### Policy learning via optimal decision trees
 
-The classification tree was cross-validated and build greedily. This means that that depth (number of splits) is chosen in a data-driven way. An alternative way is to fix the tree depth and to find the optimal splitting is via grid search. This is most important for multiple treatments where the classification trick fails, but also works for binary treatments.
+The classification tree was cross-validated and build greedily. This means that that depth (number of splits) is chosen in a data-driven way. An alternative way is to fix the tree depth and to find the optimal splitting via grid search. This is most important for multiple treatments where the classification trick fails, but also works for binary treatments.
 
-We use the `policytree` package to estimate a decision tree with one split and two splits. Instead of the ATE pseudo-outcome $\tilde{Y}_{ATE}$ that was stored in the `object\$ATE\$delta`, we have to pass the two columns containing the pseudo-outcomes for the two APOs $\tilde{Y}_{\gamma_0}$ and $\tilde{Y}_{\gamma_1}$ to the `policy_tree` function, which are stored in `object\$APO\$gamma`. But again we only reuse stuff that was needed to get the ATE in the first place.
+We use the `policytree` package to estimate a decision tree with one split and two splits. Instead of the ATE pseudo-outcome $\tilde{Y}_{ATE}$ that was stored in the `object$ATE$delta`, we have to pass the two columns containing the pseudo-outcomes for the two APOs $\tilde{Y}_{\gamma_0}$ and $\tilde{Y}_{\gamma_1}$ to the `policy_tree` function, which are stored in `object$APO$gamma`. But again we only reuse stuff that was needed to get the ATE in the first place.
 
 <br>
 
@@ -225,6 +227,8 @@ paste0("Q(pi*): ", round(Q_pi_star,1))
 paste0("Q(pi^pt1): ", round(Q_pi_hat_pt1,1))
 paste0("R(pi^pt1): ", round(regret_pt1,1))
 ```
+It nearly nails it and produces basically no regret.
+
 <br>
 
 #### Two splits
@@ -281,7 +285,7 @@ for (i in 1:reps) {
   Q_star = sum( (pi_star == "Treat") * y1 + (pi_star == "Don't treat") * y0 )
   
   # Get pseudo-outcome
-  aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
+  aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=2)
   
   # Define the sign of the pseudo-outcome
   sign_y_tilde = sign(aipw$ATE$delta)
@@ -342,12 +346,12 @@ as_tibble(results_reg) %>% pivot_longer(cols = everything(), names_to = "Method"
   geom_density_ridges(stat = "binline", bins = 20, draw_baseline = FALSE) + xlab("Regret")
 ```
 
-Note that due to samplin
+Note that due to sampling noise, the regret can sometimes even be negative. However, this will is expected to disappear once we increase sample size or use a very large validation sample.
 
 
 ## Take-away
  
- - The pseudo-outcome from the Double ML AIPW estimator can also be used to estimate policy rules in a weighted classification problem and in a policy tree algorithm
+ - The pseudo-outcome from the Double ML AIPW estimator can also be used to estimate policy rules in a weighted classification problem and in a policy tree algorithm.
  
 <br>
 <br>
@@ -359,11 +363,9 @@ Some suggestions:
  
 - Use different methods for the classification problem
 
-- Create a non-linear CATE and linear nuisance functions or 
+- Create different CATE and nuisance functions
 
 - Change the treatment shares
-
-- Run a simulation that compares the regret over multiple draws
 
 - Experience how long a depth three tree is running
 
