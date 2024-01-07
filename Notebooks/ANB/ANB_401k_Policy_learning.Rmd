@@ -21,9 +21,9 @@ Goals:
 
 <br>
 
-# 401(k) dataset again
+# 401(k) data set again
 
-We again use the data of the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (*p401*) on net assets (*net_tfa*). Since then, the data was used to showcase many new methods. It is not the most comprehensive dataset with basically ten covariates/regressors/predictors:
+We again use the data of the `hdm` package. The data was used in [Chernozhukov and Hansen (2004)](https://direct.mit.edu/rest/article/86/3/735/57586/The-Effects-of-401-K-Participation-on-the-Wealth). Their paper investigates the effect of participation in the employer-sponsored 401(k) retirement savings plan (*p401*) on net assets (*net_tfa*). Since then, the data was used to showcase many new methods. It is not the most comprehensive data set with basically ten covariates/regressors/predictors:
 
 - *age*: age
 
@@ -45,20 +45,20 @@ We again use the data of the `hdm` package. The data was used in [Chernozhukov a
 
 - *twoearn*: two earners
 
-However, it is publicly available and the few controls ensure that the programs run not as long as with datasets that you hope to have for your applications.
+However, it is publicly available and the few controls ensure that the programs run not as long as with data sets that you hope to have for your applications.
 
 ```{r, warning=F,message=F}
-# To install the causalDML package uncomment the following two lines
-# library(devtools)
-# install_github(repo="MCKnaus/causalDML")
-library(hdm)
-library(causalDML)
-library(glmnet)
-library(tidyverse)
-library(rpart)
-library(partykit)
-library(rpart.plot)
-library(policytree)
+if (!require("rpart")) install.packages("rpart", dependencies = TRUE); library(rpart)
+if (!require("rpart.plot")) install.packages("rpart.plot", dependencies = TRUE); library(rpart.plot)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("policytree")) install.packages("policytree", dependencies = TRUE); library(policytree)
+if (!require("DiagrammeR")) install.packages("DiagrammeR", dependencies = TRUE); library(DiagrammeR)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
 
 set.seed(1234) # for replicability
 
@@ -134,6 +134,8 @@ colnames(CLAN_lasso) = c("No 401(k)","401(k)")
 round(CLAN_lasso,2)
 ```
 
+It seems that mostly very high income earners are not selected.
+
 <br>
 
 ## Classification tree
@@ -163,7 +165,7 @@ colnames(CLAN_tree) = c("No 401(k)","401(k)")
 round(CLAN_tree,2)
 ```
 
-How would you check to what extend Lasso and Tree classifications agree?
+Now let's check to what extend Lasso and Tree classifications agree.
 
 ```{r}
 table(pi_lasso,pi_tree)
@@ -174,7 +176,7 @@ table(pi_lasso,pi_tree)
 
 # Policy learning with `policytree` package
 
-The `policytree` package does not explicitly solve the weighted classification problem, but searches the optimal tree over all possible splits for a given depth (not greedy). It requires $\hat{\Gamma}$ matrix
+The `policytree` package does not explicitly solve the weighted classification problem, but searches the optimal tree over all possible splits for a given depth (not greedy). It requires the $\hat{\Gamma}$ matrix
 $$
 \hat{\Gamma} = 
 \begin{bmatrix}
@@ -235,7 +237,7 @@ plot(depth2,w_label)
 
 For the depth 3 tree, we tell the function `policy_tree` to not check every splitting point (`split.step = 1000`), but to only evaluate every 1000th value of a variable. This speeds up the calculation, otherwise it takes much longer to calculate the tree:
 
-```{r}
+```{r, warnings=F}
 depth3 = policy_tree(X,aipw$APO$gamma,3,split.step = 1000)
 plot(depth3,w_label)
 ```
