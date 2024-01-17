@@ -21,4 +21,5 @@ The slides include links to a variety of compiled html **R notebooks**. Their Rm
 7. [**Heterogeneous effects**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML7_HTE.pdf)
 8. [**Heterogeneous effects: validation and description**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML8_HTE2.pdf)
 9. [**Policy learning**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML9_PL.pdf)
+10. [**Multi-armed bandits**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML10_Bandits.pdf)
 
