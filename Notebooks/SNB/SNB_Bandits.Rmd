@@ -36,16 +36,15 @@ library(tidyverse)
 set.seed(1234)
 
 # Define parameters
-mu0 = 5
-mu1 = 5.5
+gamma0 = 5
+gamma1 = 5.5
 sd0 = 2
 sd1 = 2
 n = 1000
-alpha = 2
 
 # Draw the potential outcomes of all individuals
-Y0 = rnorm(n,mu0,sd0)
-Y1 = rnorm(n,mu1,sd1)
+Y0 = rnorm(n,gamma0,sd0)
+Y1 = rnorm(n,gamma1,sd1)
 
 hist(Y0)
 hist(Y1)
@@ -76,14 +75,14 @@ W
 Y
 ```
 
-Now calculate the means in each treatment arm:
+Now calculate the means in each treatment arm $\hat{\gamma}_{i,w}$:
 
 ```{r}
-mu = c(mean(Y[W==0]), mean(Y[W==1]))
-mu
+gamma = c(mean(Y[W==0]), mean(Y[W==1]))
+gamma
 ```
 
-And the standard errors of the means:
+And the standard errors of the means $\hat{\sigma}_{i,w}$:
 
 ```{r}
 se = c(sd(Y[W==0]) / sqrt(sum(W==0)), 
@@ -91,27 +90,114 @@ se = c(sd(Y[W==0]) / sqrt(sum(W==0)),
 se
 ```
 
-For $i=5$, we implement now explicitly UCB:
+### Upper Confidence Bound (UCB)
+
+For $i=5$, we implement now explicitly UCB
+$$W_{i+1} = argmax_w (\hat{\gamma}_{i,w} + \alpha \hat{\sigma}_{i,w})$$
+with `alpha = 2`:
 
 ```{r}
 # Calculate upper confidence bound
-upper_ci = mu + alpha * se
+alpha = 2
+upper_ci = gamma + alpha * se
 upper_ci
 # Choose the treatment with the highest bound
 which.max(upper_ci)-1
 ```
 
-and also Thompson sampling:
+Let's visualize the decision.
+
+```{r}
+plot_ucb = function(gamma, se, alpha, unit = FALSE) {
+  # Calculate UCB and find the arm with the highest UCB
+  ucb <- gamma + alpha * se
+  highest_ucb_arm <- which.max(ucb)
+
+  # Data frame for plotting
+  data <- data.frame(
+    Arm = factor(0:(length(gamma)-1)),
+    Estimate = gamma,
+    UCB = ucb,
+    Highlight = ifelse(1:length(gamma) == highest_ucb_arm, "green", "orange")
+  )
+
+  # Plot
+  g = ggplot(data, aes(x = Arm)) +
+    geom_errorbar(aes(ymin = Estimate, ymax = UCB, color = Highlight), width = 0.05, linewidth = 1) +
+    geom_point(aes(y = Estimate), size = 4, color = "black") +
+    scale_color_identity() + geom_hline(yintercept = 0) +
+    labs(y = "Estimate / Upper Confidence Bound", x = "Arm",
+      title = "UCB Sampling for Multi-Armed Bandits") +
+    theme_minimal() + ylim(0,10)
+  if (is.numeric(unit)) g = g + labs(title = paste("UCB Sampling of treatment for unit",unit+1))
+  print(g)
+}
+plot_ucb(gamma,se,2)
+```
+
+
+### Thompson sampling
+
+Thompson sampling draws a value for each arm from an arm specific normal distribution $\tilde{\gamma}_{i,w} \sim N(\hat{\gamma}_{i,w},\alpha^2\hat{\sigma}^2_{i,w})$
+and sets 
+$$W_{i+1} = argmax_w \tilde{\gamma}_{i,w} $$
 
 ```{r}
 # Thompson
-draws = c(rnorm(1,mu[1],alpha*se[1]),
-          rnorm(1,mu[2],alpha*se[2]))
+draws = c(rnorm(1,gamma[1],alpha*se[1]),
+          rnorm(1,gamma[2],alpha*se[2]))
 draws
 which.max(draws)-1
 ```
 
-Note that with this very seed, UCB and Thomposon sampling do not take the same choice $\Rightarrow$ therandomness they induce is different.
+Let's visualize the decision.
+
+```{r}
+plot_ts = function(gamma, se, alpha, gamma_tilde, unit = FALSE) {
+
+  highest_arm <- which.max(gamma_tilde)
+  
+  # Data frame for plotting
+  data <- data.frame(
+    Arm = factor(1:length(gamma)),
+    Estimate = gamma,
+    Draw = gamma_tilde,
+    Highlight = ifelse(1:length(gamma) == highest_arm, "green", "orange")
+  )
+  
+  # Create a sequence of y values for plotting the normal distributions
+  y_values <- seq(-10, 10, length.out = 10000)
+  
+  # Create a data frame for plotting the normal distributions
+  plot_data <- data.frame(
+    Arm = rep(factor(1:length(gamma)), each = length(y_values)),
+    Estimate = rep(gamma, each = length(y_values)),
+    ses = rep(se, each = length(y_values)),
+    y = rep(y_values, times = length(gamma)),
+    x = NA_real_  # Placeholder for transformed x values
+  )
+  
+  # Calculate the transformed x values for the rotated distributions
+  plot_data <- plot_data %>%
+    group_by(Arm) %>%
+    mutate(x = as.numeric(Arm) + dnorm(y, mean = 0, sd = ses * alpha), y = y + Estimate)  # Scale and shift
+
+  # Plot
+  g = ggplot(data, aes(x = Arm, y = Estimate)) +
+    geom_point(size = 3, color = "black") +
+    geom_line(data = plot_data, aes(x = x, y = y, group = Arm), color = "blue") +
+    labs(y = "Estimate / Normal Distribution", x = "Arm",
+         title = "Thompson Sampling") +
+    geom_point(aes(y = Draw), size = 3, shape = 4) +
+    theme_minimal() + geom_hline(yintercept = 0) + ylim(-6,16)
+    if (is.numeric(unit)) g = g + labs(title = paste("Thompson Sampling for unit",unit+1))
+  print(g)
+}
+plot_ts(gamma,se,2,draws)
+```
+
+Note that with this very seed, UCB and Thompson sampling do not take the same choice $\Rightarrow$ they produce different treatment paths
+
 
 <br>
 
@@ -119,36 +205,45 @@ Note that with this very seed, UCB and Thomposon sampling do not take the same c
 
 First, proceed with UCB and define a function that takes
 
-- observed outcomes
+- observed outcomes,
 
-- assigned treatments
+- assigned treatments,
 
-- and the tuning parameter $\alpha$ as arguments
+- the tuning parameter $\alpha$,
+
+- and an optional argument to produce a plot as arguments
 
 and returns a treatment assignment for the next individual:
 
 ```{r}
-ucb = function(Y, W, alpha){
-  mu = c(mean(Y[W==0]), mean(Y[W==1]))
+ucb = function(Y, W, alpha, plot = FALSE){
+  gamma = c(mean(Y[W==0]), mean(Y[W==1]))
   se = c(sd(Y[W==0]) / sqrt(sum(W==0)), sd(Y[W==1]) / sqrt(sum(W==1)))
-  assign = which.max(mu + alpha * se)
+  assign = which.max(gamma + alpha * se)
+  if (isTRUE(plot)) plot_ucb(gamma,se,2, unit = length(Y))
   return(assign-1)
 }
 ```
 
-Now we run UCB until individual $i=1000$:
+Now we run UCB until $i=1000$ and plot the evolution:
 
 ```{r}
-for (i in 5:n) {
-  # Assign individual 4 to treatment one
-  Wi = ucb(Y,W,alpha)
+# Store to use it for Thompson below
+Wstart = W
+Ystart = Y
+
+plot_grid = c(5:10,20,50,100,200,500,1000)
+for (i in 5:1000) {
+  # Assign unit to treatment (and sometimes plot)
+  if (i %in% plot_grid) Wi = ucb(Y,W,alpha,plot = TRUE)
+  else Wi = ucb(Y,W,alpha,plot = FALSE)
   W = c(W,Wi)
   # and observe the potential outcome under treatment
   Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
 }
 ```
 
-And plot the share of treated assigned to the optimal policy
+additionally plot the share being assigned to the optimal policy
 
 ```{r}
 share = cumsum(W) / 1:n
@@ -157,17 +252,69 @@ plot(1:n,share)
 and the regret
 
 ```{r}
-regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+regret = cumsum(gamma1 - (W * gamma1 + (1-W) * gamma0) )  / 1:n
 plot(1:n,regret)
 ```
 
-We observe that as observations flow in, UCB figures out that treatment one is dominant and starts to solely assign it. Such that at the end of the 1000 observations regret is negligible. Note that the regret of a 50:50 experiment would have been 0.25.
+We observe that, as observations flow in, UCB figures out that treatment one is dominant and starts to solely assign it. Such that at the end of the 1000 observations regret is negligible. Note that the regret of a 50:50 experiment would have been 0.25.
 
 <br>
 
+## Dynamic treatment assignment (Thompson)
+
+Write a function similar to `ucb` above:
+
+```{r}
+thompson = function(Y, W, alpha, plot = FALSE){
+  gamma = c(mean(Y[W==0]), mean(Y[W==1]))
+  se = c(sd(Y[W==0]) / sqrt(sum(W==0)), sd(Y[W==1]) / sqrt(sum(W==1)))
+  draws = c(rnorm(1, gamma[1], alpha * se[1]),
+          rnorm(1, gamma[2], alpha * se[2]))
+  assign = which.max(draws)
+  if (isTRUE(plot)) plot_ts(gamma,se,2,draws,unit = length(Y))
+  return(assign-1)
+}
+```
+
+Now we run Thompson until $i=1000$ and plot the evolution:
+
+```{r}
+# Restore starting points
+W = Wstart
+Y = Ystart
+
+plot_grid = c(5:10,20,50,100,200,500,1000)
+for (i in 5:1000) {
+  # Assign unit to treatment (and sometimes plot)
+  if (i %in% plot_grid) Wi = thompson(Y,W,alpha,plot = TRUE)
+  else Wi = thompson(Y,W,alpha,plot = FALSE)
+  W = c(W,Wi)
+  # and observe the potential outcome under treatment
+  Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
+}
+```
+
+additionally plot the share being assigned to the optimal policy
+
+```{r}
+share = cumsum(W) / 1:n
+plot(1:n,share)
+```
+and the regret
+
+```{r}
+regret = cumsum(gamma1 - (W * gamma1 + (1-W) * gamma0) )  / 1:n
+plot(1:n,regret)
+```
+
+Again we observe that as observations flow in, Thompson sampling figures out that treatment one is dominant and starts to solely assign it. Such that at the end of the 1000 observations regret is negligible. Note that the regret of a 50:50 experiment would have been 0.25.
+
+<br>
+
+
 ## Simulation study UCB
 
-We now run this 100 times each for a sequence of values of the tuning parameters `alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)`. We track the following quantities:
+We now run this 1000 times each for a sequence of values of the tuning parameters `alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)` and track the following quantities:
 
 - Average regret at $i=10$, $i=100$ and $i=1000$
 
@@ -177,7 +324,7 @@ We now run this 100 times each for a sequence of values of the tuning parameters
 ```{r}
 alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)
 
-reps = 1000 # Reduce to 100 if you have no time
+reps = 1000
 
 temp = matrix(NA,reps,6)
 results = matrix(NA,length(alpha),6)
@@ -186,8 +333,8 @@ colnames(results) = c("regret10","regret100","regret1000","optimal10","optimal10
 for (a in 1:length(alpha)) {
   for (j in 1:reps) {
     # Draw sample
-    Y0 = rnorm(n,mu0,sd0)
-    Y1 = rnorm(n,mu1,sd1)
+    Y0 = rnorm(n,gamma0,sd0)
+    Y1 = rnorm(n,gamma1,sd1)
     
     # Get kick-start
     W = c(0,1,0,1)
@@ -201,7 +348,7 @@ for (a in 1:length(alpha)) {
       # and observe the potential outcome under treatment
       Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
     }
-    regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+    regret = cumsum(gamma1 - (W * gamma1 + (1-W) * gamma0) )  / 1:n
     temp[j,1] = regret[10]
     temp[j,2] = regret[100]
     temp[j,3] = regret[1000]
@@ -229,20 +376,7 @@ We observe that a value of $\alpha = 3$ minimizes regret in the long run and max
 
 ## Simulation study Thompson sampling
 
-First, write a function similar to the `ucb` function that implements Thompson sampling:
-
-```{r}
-thompson = function(Y, W, alpha){
-  mu = c(mean(Y[W==0]), mean(Y[W==1]))
-  se = c(sd(Y[W==0]) / sqrt(sum(W==0)), sd(Y[W==1]) / sqrt(sum(W==1)))
-  draws = c(rnorm(1, mu[1], alpha * se[1]),
-          rnorm(1, mu[2], alpha * se[2]))
-  assign = which.max(draws)
-  return(assign-1)
-}
-```
-
-and use it in the same loop as before:
+Use the Thomposon function in the same loop as before:
 
 ```{r}
 alpha = c(0,0.5,1,1.5,2,2.5,3,4,5,10,1000)
@@ -256,8 +390,8 @@ colnames(results) = c("regret10","regret100","regret1000","optimal10","optimal10
 for (a in 1:length(alpha)) {
   for (j in 1:reps) {
     # Draw sample
-    Y0 = rnorm(n,mu0,sd0)
-    Y1 = rnorm(n,mu1,sd1)
+    Y0 = rnorm(n,gamma0,sd0)
+    Y1 = rnorm(n,gamma1,sd1)
     
     # Get kick-start
     W = c(0,1,0,1)
@@ -271,7 +405,7 @@ for (a in 1:length(alpha)) {
       # and observe the potential outcome under treatment
       Y = c(Y,(1-Wi) * Y0[i] + Wi * Y1[i])
     }
-    regret = cumsum(mu1 - (W * mu1 + (1-W) * mu0) )  / 1:n
+    regret = cumsum(gamma1 - (W * gamma1 + (1-W) * gamma0) )  / 1:n
     temp[j,1] = regret[10]
     temp[j,2] = regret[100]
     temp[j,3] = regret[1000]
@@ -293,10 +427,12 @@ as_tibble(cbind(alpha, results[,4:6])) %>% pivot_longer(!alpha,names_to = "indiv
   labs(x = "alpha", y = "Prob of optimal choice", color = "Position") + theme_bw()
 ```
 
-We see the same exploration vs. exploitation trade-off as for UCB. However, the optimal $\alpha = 1$ and Thompson sampling manages to realize a smaller average regret of around 0.05, while UCB had only 0.07, at least with this very coarse grid.
+We see the same exploration vs. exploitation trade-off as for UCB. However, the optimal is $\alpha = 1$ and Thompson sampling manages to realize a smaller average regret of around 0.05, while UCB had only 0.07, at least with this very coarse grid.
 
 <br>
 
 ## Potential extensions
 
 - Change the mean and/or variance of the treatment and control group. First think about what you expect and then test your intuition by running the modified notebook.
+
+- More treatments
