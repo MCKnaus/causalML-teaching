@@ -77,7 +77,7 @@ mhat = predict(rf,newdata=x)$predictions
 res_y = y-mhat
 res_w = w-ehat
 # Run residual-on-residual regression (RORR)
-lm_robust(res_y ~ 0 + res_w)$coefficients
+lm_robust(res_y ~ 0 + res_w)
 ```
 
 Note that the ultimate hand-coded version uses the equation of the slides, which gives the equivalent estimate
@@ -130,7 +130,7 @@ mhat[index_s1] = predict(rf,newdata=x1)$predictions
 # RORR
 res_y = y-mhat
 res_w = w-ehat
-lm(res_y ~ 0 + res_w)$coefficients
+lm_robust(res_y ~ 0 + res_w)
 ```
 
 <br>
@@ -160,9 +160,9 @@ summary(pl_cf5)
 
 To check whether the above results are just by chance, we run a simulation study drawing $M=100$ samples from the DGP described above and estimate the effect with six different methods:
 
-- Double Selection with only the 10 main variables
+- Double Selection with only the 5 main variables
 
-- Double Selection with the 10 main variables and their squared values
+- Double Selection with the 5 main variables and their squared values
 
 - Double Selection including up to the third order polynomial of the main variables (the results do not improve for at least fifth order while increasing computational costs)
 
