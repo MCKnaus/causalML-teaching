@@ -2,7 +2,7 @@
 title: "Causal ML: Group Average Treatment Effects"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -39,13 +39,16 @@ This leads to substantial effect heterogeneity driven by the first three covaria
 
 
 ```{r, warning = F, message = F}
-library(grf)
-library(causalDML)
-library(tidyverse)
-library(patchwork)
-library(estimatr)
-library(np)
-library(crs)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("patchwork")) install.packages("patchwork", dependencies = TRUE); library(patchwork)
+if (!require("estimatr")) install.packages("estimatr", dependencies = TRUE); library(estimatr)
+if (!require("np")) install.packages("np", dependencies = TRUE); library(np)
+if (!require("crs")) install.packages("crs", dependencies = TRUE); library(crs)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
 
 set.seed(1234)
 
@@ -122,8 +125,8 @@ data.frame(Variable = c("Constant",paste0("X",1:5)),
            cil = lm_fit2$coefficients - 1.96*se2,
            ciu = lm_fit2$coefficients + 1.96*se2,
            truth = c(0,rho[1:5])) %>% 
-  ggplot(aes(x=Variable,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(linewidth=2.5,aes(colour="Estimate",shape="Estimate")) + geom_errorbar(width=0.15)  +
-  geom_hline(yintercept=0) + geom_point(aes(x=Variable,y=truth,colour="Truth",shape="Truth"),linewidth=2.5) +
+  ggplot(aes(x=Variable,y=Coefficient,ymin=cil,ymax=ciu)) + geom_point(size=2.5,aes(colour="Estimate",shape="Estimate")) + geom_errorbar(width=0.15)  +
+  geom_hline(yintercept=0) + geom_point(aes(x=Variable,y=truth,colour="Truth",shape="Truth"),size=2.5) +
   scale_colour_manual(name="Legend", values = c("black","blue")) + 
   scale_shape_manual(name="Legend",values = c(19,8))
 ```
@@ -154,7 +157,7 @@ summary(aipw$APO)
 summary(aipw$ATE)
 ```
 
-It stores the pseudo-outcome in the created object (`object\$ATE\$delta`) such that we can use it in the next step without rerunning the ML steps again:
+It stores the pseudo-outcome in the created object (`object$ATE$delta`) such that we can use it in the next step without rerunning the ML steps again:
 
 
 ```{r}
@@ -188,7 +191,7 @@ plot(tau,lm_fit5$fitted.values)
 
 # Non-parametric heterogeneity
 
-Now we revisit the second DGP of notebook *SNB_AIPW_DML* with zero ATE but highly nonlinear effect heterogeneity:
+Now we revisit the second DGP of notebook [SNB_AIPW_DML](https://mcknaus.github.io/assets/notebooks/SNB/SNB_AIPW_DML.nb.html) with zero ATE but highly nonlinear effect heterogeneity:
 
 - $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
 
@@ -227,7 +230,7 @@ Consider we are interested in the heterogeneity with respect to the first covari
 
 We draw a sample of $N=1000$ and estimate the nuisance parameters $e(X)=E[W|X]$, $m(0,X)=E[Y|W=0,X]$ and $m(1,X)=E[Y|W=1,X]$ using honest random forest with self-tuned tuning parameters and all ten covariates. 
 
-We first handcode 2-fold cross-validation and plug the resulting nuisance parameters into the pseudo outcome:
+We first handcode 2-fold cross-validation and plug the resulting nuisance parameters into the pseudo outcome formula:
 
 ```{r}
 m0hat = m1hat = ehat = rep(NA,n)
@@ -260,7 +263,7 @@ pseudo_y =  m1hat - m0hat +
   w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
 ```
 
-Now we use the pseudo-outcome in a kernel regression with the only covariate being $X_1$. We cross-validate the bandwidth of the kernel regression, run the estimation with the *np* package and plot the estimated curve:
+Now we use the pseudo-outcome in a kernel regression with the only covariate being $X_1$. We cross-validate the bandwidth of the kernel regression, run the estimation with the `np` package and plot the estimated curve:
 
 ```{r, results='hide'}
 z = as.data.frame(x[,1])
@@ -294,7 +297,7 @@ summary(aipw$APO)
 summary(aipw$ATE)
 ```
 
-It stores the pseudo-outcome in the created object (`object\$ATE\$delta`) such that we can use it in the next step without rerunning the ML steps again. The full procedure is implemented in the `kr_cate` function:
+It stores the pseudo-outcome in the created object (`object$ATE$delta`) such that we can use it in the next step without rerunning the ML steps again. The full procedure is implemented in the `kr_cate` function:
 
 ```{r, results='hide'}
 kernel_reg_x1 = kr_cate(aipw$ATE$delta,x[, 1])
@@ -321,7 +324,7 @@ We find no evidence of heterogeneous effects along $X_2$, as we should.
 
 ### Hand-coded 2-fold cross-fitting
 
-Consider again that we are interested in the heterogeneity with respect to the first covariate $X_1$. We reuse first the handcoded 2-fold cross-fitted pseudo outcome in a series regression with B-splines using `crs` package
+Consider again that we are interested in the heterogeneity with respect to the first covariate $X_1$. We reuse first the handcoded 2-fold cross-fitted pseudo outcome in a series regression with B-splines using the `crs` package
 
 ```{r, results='hide'}
 spline_gate = crs(pseudo_y ~ as.matrix(z))

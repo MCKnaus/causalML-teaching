@@ -66,7 +66,7 @@ tau = function(x){m1(x) - m0(x)}
 w = rbinom(n,1,e(x[,1]))
 y0 = m0(x[,1]) + rnorm(n,0,1)
 y1 = m1(x[,1]) + rnorm(n,0,1)
-y = w*y1 + (1-w)*y0 + rnorm(n,0,1)
+y = w*y1 + (1-w)*y0
 # Define optimal policy additionally
 pi_star = ifelse(x[,1]>0,"Treat","Don't treat")
 
@@ -142,14 +142,14 @@ table(pi_star,pi_hat_tree)
 paste0("The classification accuracy of the tree is ", (sum(diag(table(pi_star,pi_hat_tree))) / n) * 100, "%")
 ```
 
-We see that the majority is correctly classified. 
+We see that the majority is correctly classified, although the tree is overly complicated in this particular draw. It should have stopped after the first split.
 
 As we know both potential outcomes in our simulated dataset, we can calculate (i) the value function under the optimal policy $Q(\pi^*) = E[Y(\pi^*)]$, (ii) the value function of the estimated assignment rule $Q(\hat{\pi}^{tree}) = E[Y(\hat{\pi}^{tree})]$ and (iii) the regret $R(\hat{\pi}^{tree}) = Q(\pi^*) - Q(\hat{\pi}^{tree})$
 
 ```{r}
 # Calculate values and regret
-Q_pi_star = sum( (pi_star == "Treat") * y1 + (pi_star == "Don't treat") * y0 )
-Q_pi_hat_tree = sum( (pi_hat_tree == "Treat") * y1 + (pi_hat_tree == "Don't treat") * y0 )
+Q_pi_star = sum( (pi_star == "Treat") * m1(x[,1]) + (pi_star == "Don't treat") * m0(x[,1]) )
+Q_pi_hat_tree = sum( (pi_hat_tree == "Treat") * m1(x[,1]) + (pi_hat_tree == "Don't treat") * m0(x[,1]) )
 regret_tree = Q_pi_star - Q_pi_hat_tree
 # Print
 paste0("Q(pi*): ", round(Q_pi_star,1))
@@ -183,7 +183,7 @@ table(pi_star,pi_hat_lasso)
 # compute the accuracy
 paste0("The classification accuracy of the Lasso is ", (sum(diag(table(pi_star,pi_hat_lasso))) / n) * 100, "%")
 # Calculate value and regret
-Q_pi_hat_lasso = sum( (pi_hat_lasso == "Treat") * y1 + (pi_hat_lasso == "Don't treat") * y0 )
+Q_pi_hat_lasso = sum( (pi_hat_lasso == "Treat") * m1(x[,1]) + (pi_hat_lasso == "Don't treat") * m0(x[,1]) )
 regret_lasso = Q_pi_star - Q_pi_hat_lasso
 # Print
 paste0("Q(pi*): ", round(Q_pi_star,1))
@@ -212,7 +212,7 @@ pi_hat_pt1 = predict(pt1,newdata=x)
 plot(pt1)
 ```
 
-Action 1 means no treatment, action 2  means treatment. We see that it nearly finds the perfect split. Let's check again performance: 
+Action 1 means no treatment, action 2  means treatment. We see that it finds the perfect split. Let's see this in the performance metrics: 
 
 ```{r}
 # Compare to the optimal rule
@@ -220,14 +220,14 @@ table(pi_star,pi_hat_pt1)
 # compute the accuracy
 paste0("The classification accuracy of the one split tree is ", (sum(diag(table(pi_star,pi_hat_pt1))) / n) * 100, "%")
 # Calculate value and regret
-Q_pi_hat_pt1 = sum( (pi_hat_pt1 == 2) * y1 + (pi_hat_pt1 == 1) * y0 )
+Q_pi_hat_pt1 = sum( (pi_hat_pt1 == 2) * m1(x[,1]) + (pi_hat_pt1 == 1) * m0(x[,1]) )
 regret_pt1 = Q_pi_star - Q_pi_hat_pt1
 # Print
 paste0("Q(pi*): ", round(Q_pi_star,1))
 paste0("Q(pi^pt1): ", round(Q_pi_hat_pt1,1))
 paste0("R(pi^pt1): ", round(regret_pt1,1))
 ```
-It nearly nails it and produces basically no regret.
+It nails it and therefore produces no regret.
 
 <br>
 
@@ -250,7 +250,7 @@ table(pi_star,pi_hat_pt2)
 # compute the accuracy
 paste0("The classification accuracy of the two split tree is ", (sum(diag(table(pi_star,pi_hat_pt2))) / n) * 100, "%")
 # Calculate value and regret
-Q_pi_hat_pt2 = sum( (pi_hat_pt2 == 2) * y1 + (pi_hat_pt2 == 1) * y0 )
+Q_pi_hat_pt2 = sum( (pi_hat_pt2 == 2) * m1(x[,1]) + (pi_hat_pt2 == 1) * m0(x[,1]) )
 regret_pt2 = Q_pi_star - Q_pi_hat_pt2
 # Print
 paste0("Q(pi*): ", round(Q_pi_star,1))
@@ -282,7 +282,7 @@ for (i in 1:reps) {
   y1 = m1(x[,1]) + rnorm(n,0,1)
   y = w*y1 + (1-w)*y0 + rnorm(n,0,1)
   pi_star = ifelse(x[,1]>0,"Treat","Don't treat")
-  Q_star = sum( (pi_star == "Treat") * y1 + (pi_star == "Don't treat") * y0 )
+  Q_star = sum( (pi_star == "Treat") * m1(x[,1]) + (pi_star == "Don't treat") * m0(x[,1]) )
   
   # Get pseudo-outcome
   aipw = DML_aipw(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=2)
@@ -300,7 +300,7 @@ for (i in 1:reps) {
                   method = "class")
   pi_hat_tree = predict(class_tree,type="class")
   results_ca[i,1] = sum(diag(table(pi_star,pi_hat_tree))) / n * 100
-  results_reg[i,1] = Q_star - sum( (pi_hat_tree == "Treat") * y1 + (pi_hat_tree == "Don't treat") * y0 )
+  results_reg[i,1] = Q_star - sum( (pi_hat_tree == "Treat") * m1(x[,1]) + (pi_hat_tree == "Don't treat") * m0(x[,1]) )
   
   # Lasso
   class_lasso = cv.glmnet(x, sign_y_tilde,       
@@ -309,19 +309,19 @@ for (i in 1:reps) {
                   weights = abs_y_tilde)     # using the abs pseudo-outcome as weights
   pi_hat_lasso = predict(class_lasso, newx = x, s = "lambda.min", type = "class")
   results_ca[i,2] = sum(diag(table(pi_star,pi_hat_lasso))) / n * 100
-  results_reg[i,2] = Q_star - sum( (pi_hat_lasso == "Treat") * y1 + (pi_hat_lasso == "Don't treat") * y0 )
+  results_reg[i,2] = Q_star - sum( (pi_hat_lasso == "Treat") * m1(x[,1]) + (pi_hat_lasso == "Don't treat") * m0(x[,1]) )
   
   # Policy tree depth 1
   pt1 = policy_tree(x,aipw$APO$gamma,depth=1)
   pi_hat_pt1 = predict(pt1,newdata=x)
   results_ca[i,3] = sum(diag(table(pi_star,pi_hat_pt1))) / n * 100
-  results_reg[i,3] = Q_star - sum( (pi_hat_pt1 == 2) * y1 + (pi_hat_pt1 == 1) * y0 )
+  results_reg[i,3] = Q_star - sum( (pi_hat_pt1 == 2) * m1(x[,1]) + (pi_hat_pt1 == 1) * m0(x[,1]) )
   
   # Policy tree depth 2
   pt2 = policy_tree(x,aipw$APO$gamma,depth=2)
   pi_hat_pt2 = predict(pt2,newdata=x)
   results_ca[i,4] = sum(diag(table(pi_star,pi_hat_pt2))) / n * 100
-  results_reg[i,4] = Q_star - sum( (pi_hat_pt2 == 2) * y1 + (pi_hat_pt2 == 1) * y0 )
+  results_reg[i,4] = Q_star - sum( (pi_hat_pt2 == 2) * m1(x[,1]) + (pi_hat_pt2 == 1) * m0(x[,1]) )
 }
 
 round(colMeans(results_ca),1)
@@ -340,13 +340,22 @@ as_tibble(results_ca) %>% pivot_longer(cols = everything(), names_to = "Method",
 ```
 
 ```{r}
+colMeans(results_ca)
+```
+
+```{r}
 # Plot the data ready
 as_tibble(results_reg) %>% pivot_longer(cols = everything(), names_to = "Method", values_to = "CA") %>% 
   ggplot(aes(x = CA, y = fct_rev(Method), fill = Method)) +
   geom_density_ridges(stat = "binline", bins = 20, draw_baseline = FALSE) + xlab("Regret")
 ```
 
-Note that due to sampling noise, the regret can sometimes even be negative. However, this will is expected to disappear once we increase sample size or use a very large validation sample.
+```{r}
+colMeans(results_reg)
+```
+
+We observe that the policy tree and Lasso perform quite well, while the classification tree performs surprisingly bad given that the optimal policy requires just one split.
+
 
 
 ## Take-away

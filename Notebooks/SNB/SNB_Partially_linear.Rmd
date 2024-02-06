@@ -2,7 +2,7 @@
 title: "Causal ML: Partially linear Double ML"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -21,7 +21,7 @@ Goals:
 
 Consider the following DGP:
 
-- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+- $p=5$ independent covariates $X_1,...,X_k,...,X_{5}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
 
 - The treatment model is $W = \underbrace{sin(X_1)}_{e(X)} + \epsilon$, with $\epsilon \sim N(0,1)$
 
@@ -31,20 +31,20 @@ This means that we are in a highly nonlinear setting, but only one variable ($X_
 
 
 ```{r, warning = F, message = F}
-# To install the causalDML package uncomment the following two lines
-# library(devtools)
-# install_github(repo="MCKnaus/causalDML")
-
-library(hdm)
-library(grf)
-library(causalDML)
-library(tidyverse)
-library(patchwork)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("estimatr")) install.packages("estimatr", dependencies = TRUE); library(estimatr)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("patchwork")) install.packages("patchwork", dependencies = TRUE); library(patchwork)
+if (!require("hdm")) install.packages("hdm", dependencies = TRUE); library(hdm)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
 
 set.seed(1234)
 
-n = 100
-p = 10
+n = 200
+p = 5
 
 theta = 0.1
 
@@ -77,7 +77,7 @@ mhat = predict(rf,newdata=x)$predictions
 res_y = y-mhat
 res_w = w-ehat
 # Run residual-on-residual regression (RORR)
-lm_robust(res_y ~ 0+res_w)$coefficients
+lm_robust(res_y ~ 0 + res_w)$coefficients
 ```
 
 Note that the ultimate hand-coded version uses the equation of the slides, which gives the equivalent estimate
@@ -130,7 +130,7 @@ mhat[index_s1] = predict(rf,newdata=x1)$predictions
 # RORR
 res_y = y-mhat
 res_w = w-ehat
-lm(res_y ~ 0+res_w)$coefficients
+lm(res_y ~ 0 + res_w)$coefficients
 ```
 
 <br>
@@ -153,24 +153,18 @@ pl_cf5 = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)
 summary(pl_cf5)
 ```
 
-5-fold cross-fitting comes closest with this seed, but this could all be by chance.
-
 <br>
 
 
 # Simulation study
 
-We run a simulation study drawing $M=100$ samples from the DGP described above and estimate the effect with eight different estimators:
+To check whether the above results are just by chance, we run a simulation study drawing $M=100$ samples from the DGP described above and estimate the effect with six different methods:
 
 - Double Selection with only the 10 main variables
 
 - Double Selection with the 10 main variables and their squared values
 
-- Double Selection including up to the third order polynomial of the main variables
-
-- Double Selection including up to the fourth order polynomial of the main variables
-
-- Double Selection including up to the fifth order polynomial of the main variables
+- Double Selection including up to the third order polynomial of the main variables (the results do not improve for at least fifth order while increasing computational costs)
 
 - Partially linear model estimated w/o cross-fitting
 
@@ -178,14 +172,12 @@ We run a simulation study drawing $M=100$ samples from the DGP described above a
 
 - Partially linear model estimated with 5-fold cross-fitting
 
-
-
 ```{r}
 # set number of replications
 n_rep = 100
 # Initialize results matrix
-results = matrix(NA,n_rep,8)
-colnames(results) = c("DS1","DS2","DS3","DS4","DS5","PL no cf","PL cf2","PL cf5")
+results = matrix(NA,n_rep,6)
+colnames(results) = c("DS1","DS2","DS3","PL no cf","PL cf2","PL cf5")
 # run the simulation
 for (i in 1:n_rep) {
   x = matrix(runif(n*p,-pi,pi),ncol=p)
@@ -198,12 +190,7 @@ for (i in 1:n_rep) {
   results[i,2] = rlassoEffect(x2,y,w)$alpha
   x3 = cbind(x2,x^3)
   results[i,3] = rlassoEffect(x3,y,w)$alpha
-  x4 = cbind(x3,x^4)
-  results[i,4] = rlassoEffect(x4,y,w)$alpha
-  x5 = cbind(x4,x^5)
-  results[i,5] = rlassoEffect(x5,y,w)$alpha
-  
-  
+
   # No cross-fitting
   rf = regression_forest(x,w,honesty=F)
   ehat = predict(rf,newdata=x)$predictions
@@ -211,7 +198,7 @@ for (i in 1:n_rep) {
   mhat = predict(rf,newdata=x)$predictions
   res_y = y-mhat
   res_w = w-ehat
-  results[i,6] = lm(res_y ~ 0+res_w)$coefficients
+  results[i,4] = lm(res_y ~ 0+res_w)$coefficients
   
   # 2-fold cross-fitting
   mhat = ehat = rep(NA,n)
@@ -232,25 +219,24 @@ for (i in 1:n_rep) {
   mhat[index_s1] = predict(rf,newdata=x1)$predictions
   res_y = y-mhat
   res_w = w-ehat
-  results[i,7] = lm(res_y ~ 0+res_w)$coefficients
+  results[i,5] = lm(res_y ~ 0+res_w)$coefficients
   
   # 5-fold cross-fitting
-  results[i,8] = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)$result[1]
+  results[i,6] = DML_partial_linear(y,w,x,ml_w=list(forest),ml_y=list(forest),cf=5)$result[1]
 }
 ```
 
-We plot the histograms of Double Selection with fifth order polynomials (those with lower order look very similar), and the three partially linear estimators.
-
+We plot the histograms of Double Selection with third order polynomials (those with lower order look identical because all of them select no controls), and the three partially linear estimators.
 
 ```{r}
-as.data.frame(results[,c(5,6,7,8)]) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
+as.data.frame(results[,c(3:6)]) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
   ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.4) + theme_bw() + geom_vline(xintercept=theta)
 ```
 
 
-The Double Selection estimator is clearly biased. Those based on the partially linear model also a little bit, but they are remarkably close given that we use only 100 observations.
+The Double Selection estimator is clearly biased. Those based on the partially linear model also a little bit, but they are remarkably close given that we use only 200 observations.
 
-Lets have a closer look at the performance and check the MSE of the estimators and its decomposition, where $\hat{\theta}_m$ is the estimated parameter in the $m$-th replication:
+Let's have a closer look at the performance and check the MSE of the estimators and its decomposition, where $\hat{\theta}_m$ is the estimated parameter in the $m$-th replication:
 
 $$MSE(\hat{\theta)} = M^{-1} \sum_m (\hat{\theta}_m - \theta)^2 =  \underbrace{(\overbrace{M^{-1} \sum_m \hat{\theta}_m}^{\bar{\theta}} - \theta)^2}_{Bias^2} + \underbrace{M^{-1} \sum_m (\hat{\theta}_m - \bar{\theta})^2}_{Variance} $$
 
@@ -265,9 +251,9 @@ data.frame(method = colnames(results),
 
 We observe that all Double Selection estimators are severely biased, while the bias of the partially linear estimators is negligible. 
 
-The worse performance of 2-fold cross-fitting should disappear with larger sample sizes. 
+The worse performance of 2-fold cross-fitting should disappear with larger sample sizes.
 
-In this setting cross-fitting seems not to be required. However, the next notebooks will look closer into this issue and show that it is especially important to get valid inference.
+In this setting cross-fitting seems not to be required. However, the next notebooks will look closer into this issue and show that it can be crucial to get valid inference.
 
 
 <br>

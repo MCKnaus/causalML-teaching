@@ -2,7 +2,7 @@
 title: "Causal ML: AIPW Double ML (ATE)"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -28,7 +28,7 @@ Goals:
 
 Consider the following DGP with homogeneous effects and a binary treatment:
 
-- $p=10$ independent covariates $X_1,...,X_k,...,X_{10}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
+- $p=5$ independent covariates $X_1,...,X_k,...,X_{5}$ drawn from a uniform distribution: $X_k \sim uniform(-\pi,\pi)$
 
 - The treatment model is $W \sim Bernoulli(\underbrace{\Phi(sin(X_1))}_{e(X)})$, where $\Phi(\cdot)$ is the standard normal cumulative density function
 
@@ -38,11 +38,13 @@ This means that we are in a highly nonlinear setting, but only one variable ($X_
 
 
 ```{r, warning = F, message = F}
-library(hdm)
-library(grf)
-library(causalDML)
-library(tidyverse)
-library(patchwork)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("patchwork")) install.packages("patchwork", dependencies = TRUE); library(patchwork)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
 
 set.seed(1234)
 
@@ -149,7 +151,7 @@ m1hat[index_s1] = predict(rf,newdata=x1)$predictions
 # Generate pseudo-outcome and take and test mean
 pseudo_y =  m1hat - m0hat +
   w*(y-m1hat) / ehat - (1-w)*(y-m0hat) / (1-ehat)
-summary(lm(pseudo_y~1))
+summary(lm(pseudo_y ~ 1))
 ```
 
 <br>
@@ -159,7 +161,7 @@ summary(lm(pseudo_y~1))
 
 2-fold cross-fitting is easy to implement but especially in small sample sizes using only 50% of the data to estimate the nuisance parameters might lead to unstable predictions.
 
-Thus, we use the `DML_aipw` function of the `causalDML` package to run 5-fold cross-fitting. This package requires to create the methods that we use because it allows for ensemble methods. For now, we focus on the plain random forest.
+Thus, we use the `DML_aipw` function of the `causalDML` package to run 5-fold cross-fitting. This package requires to create the methods that we use because it allows for ensemble methods. For now, we focus on the honest random forest.
 
 With 5-fold cross-fitting, we split the sample in 5 folds and use 4 folds (80% of the data) to predict the left out fold (20% of the data). We iterate such that every fold is left out once.
 
@@ -177,9 +179,9 @@ summary(aipw$ATE)
 
 We observe two things:
 
-- The estimator with5-fold cross-fitting comes closest to the true value
+- The estimator with 5-fold cross-fitting comes closest to the true value
 
-- However, without cross-fitting is also close, but with a much much smallter standard error.
+- However, without cross-fitting is also close, but with a much much smaller standard error.
 
 Let's see whether the former is only by chance or systematic, and especially whether the latter is too good to be true.
 
@@ -203,7 +205,7 @@ We would like to have nominal coverage, i.e. for a 95% confidence level it shoul
 
 ```{r}
 # set number of replications
-n_rep = 1000
+n_rep = 1000 # Decrease for faster computation
 # initialize storage for results
 coverage = results = matrix(NA,n_rep,3)
 colnames(coverage) = colnames(results) = c("PL cf5","AIPW no","AIPW cf5")
@@ -248,7 +250,7 @@ as.data.frame(results) %>% pivot_longer(cols=everything(),names_to = "Estimator"
   ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.5) + theme_bw() + geom_vline(xintercept=theta)
 ```
 
-This is confirmed by the decomposition of the MSE (see formula in *SNB_Partially_linear* notebook):
+This is confirmed by the decomposition of the MSE (see formula in [SNB_Partially_linear](https://mcknaus.github.io/assets/notebooks/SNB/SNB_Partially_linear.nb.html) notebook):
 
 ```{r}
 data.frame(method = colnames(results),
@@ -259,7 +261,7 @@ data.frame(method = colnames(results),
   geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
 ```
 
-Notably the variance of the partially linear estimator is smaller than the AIPW, while both are basically unbiased. This makes sense because we looked at the case with actual effect homogeneity, where the partially linear estimator is an efficient estimator in case of homoscedastic errors, which we impose.
+Notably the variance of the partially linear estimator is smaller compared to cross-fitted AIPW, while both are basically unbiased. This makes sense because we looked at the case with actual effect homogeneity, where the partially linear estimator is an efficient estimator in case of homoscedastic errors, which we impose.
 
 Finally, let's check the coverage rate:
 
@@ -271,7 +273,7 @@ data.frame(method = colnames(results),
   geom_hline(yintercept=c(0,1))
 ```
 
-Without cross-fitting, the coverage rate of AIPW is only 50%, which reflects the bias and probably also that the estimated standard errors are too small. The other two slightly undercover, but especially cross-fitted AIPW works well in terms of inference.
+Without cross-fitting, the coverage rate of AIPW is only 50%, which reflects the bias and that the estimated standard errors are too small. The other two slightly undercover, but especially cross-fitted AIPW works well in terms of inference.
 
 
 <br>
@@ -381,7 +383,7 @@ data.frame(method = colnames(results_het),
   geom_bar(position="stack", stat="identity") + scale_fill_discrete(name = "Component")
 ```
 
-Notably the partially linear estimator is unbiased although it assumes effect heterogeneity. However, it shows a higher variance than the AIPW estimator. This is expected because AIPW is an efficient estimator in the heterogeneous effects setting. But cross-fitting seems to be harmful as we have no bias and lower variance without all this additional effort.
+Notably the partially linear estimator is unbiased although it assumes effect heterogeneity. However, it shows a higher variance than the AIPW estimator. This is not unexpected because AIPW is an efficient estimator in the heterogeneous effects setting. But cross-fitting seems to be harmful as we have no bias and lower variance without all this additional effort.
 
 BUT, let's check the coverage rate:
 
@@ -490,8 +492,7 @@ for (i in 1:n_rep) {
 
 We plot the estimator distributions:
 
-
-```{r}
+```{r, warning = F, message = F}
 as.data.frame(results_unbal) %>% pivot_longer(cols=everything(),names_to = "Estimator",values_to = "coef") %>%
   ggplot(aes(x = coef, fill = Estimator)) + geom_density(alpha=0.5) + theme_bw() + geom_vline(xintercept=0)
 ```

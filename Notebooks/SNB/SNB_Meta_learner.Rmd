@@ -2,7 +2,7 @@
 title: "Causal ML: Meta-learner"
 subtitle: "Simulation notebook"
 author: "Michael Knaus"
-date: "02/23"
+date: "`r format(Sys.time(), '%m/%y')`"
 output: 
   html_notebook:
     toc: true
@@ -37,13 +37,18 @@ Consider a DGP with linear heterogeneous treatment effects, but nonlinear propen
 We draw a sample of 1000 observations to begin with:
 
 ```{r, warning = F, message = F}
-# Load packages
-library(grf)
-library(causalDML)
-library(tidyverse)
-library(glmnet)
-library(rlearner)
-library(psych)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("glmnet")) install.packages("glmnet", dependencies = TRUE); library(glmnet)
+if (!require("psych")) install.packages("psych", dependencies = TRUE); library(psych)
+if (!require("causalDML")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github(repo="MCKnaus/causalDML") 
+}; library(causalDML)
+if (!require("rlearner")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github("xnie/rlearner")
+}; library(rlearner)
 
 set.seed(1234)
 
@@ -132,8 +137,7 @@ The estimated coefficients are relatively close to their true values.
 ### 2. Pseudo-outcome and weights
 
 The more generic alternative is to use the unmodified covariates in a weighted regression with pseudo outcomes:
-$$\hat{\tau}^{rl}(x)  = argmin_{\tau} \sum_{i=1}^N \underbrace{(W_i - \hat{e}(X_i))^2}_{\text{weight}} \left(\underbrace{\frac{Y_i - \hat{m}(X_i)}{W_i - \hat{e}(X_i)}}_{\text{pseudo-outcome}} -  X_i\beta \right)^2$$
-
+$$\hat{\beta}^{rl}  = argmin_{\beta} \sum_{i=1}^N \underbrace{(W_i - \hat{e}(X_i))^2}_{\text{weight}} \left(\underbrace{\frac{Y_i - \hat{m}(X_i)}{W_i - \hat{e}(X_i)}}_{\text{pseudo-outcome}} -  X_i'\beta \right)^2$$
 
 ```{r}
 # Create pseudo-outcome (outcome res divided by treatment res)
@@ -155,7 +159,7 @@ This produces the same results as the modified covariate as the equality of all 
 all.equal(as.numeric(rols_fit$coefficients), as.numeric(lm(res_y ~ 0 + xstar)$coefficients))
 ```
 
-We store the fitted values as estimates of the CATEs to compare them later with the truth and other methods.
+We store the fitted values $\hat{\tau}(x) = x'\hat{\beta}^{rl}$ as estimates of the CATEs to compare them later with the truth and other methods.
 
 ```{r}
 # Estimate CATEs
@@ -191,7 +195,7 @@ rlasso_est = predict(rlasso_fit, x)
 
 ## DR-learner via `causalDML` package
 
-The DR-learner uses the hopefully by now familiar pseudo-outcome of the AIPW ATE estimator and we will not handcode it again (see notebook *SNB_GATE* and replace the final OLS or Kernel regression step with the supervised ML method of your choice).
+The DR-learner uses the hopefully by now familiar pseudo-outcome of the AIPW ATE estimator and we will not handcode it again (see notebook [SNB_GATE](https://mcknaus.github.io/assets/notebooks/SNB/SNB_GATE.nb.html) and replace the final OLS or Kernel regression step with the supervised ML method of your choice).
 
 The `causalDML` package implements the DR-learner with the required cross-fitting procedure. It is a bit more complicated than what we discussed so far, but uses the same ideas we have learned. For details see the Appendix of [Knaus (2020)](https://arxiv.org/abs/2003.03191).
 
@@ -213,9 +217,9 @@ colnames(results1k) = c("True","RL OLS","RL Lasso hand","rlasso","DR RF")
 pairs.panels(results1k,method = "pearson")
 ```
 
-All estimators come quite close, but especially the DR-learner shows a lower correlation with the true CATEs.
+All estimators come quite close, but especially the DR-learner shows a lower correlation with the true CATEs. This is not unexpected because it uses Random Forest to approximate a linear CATE in its final step, while the other methods use OLS / Lasso that are expected to perform well with linear CATE functions.
 
-Interestingly when checking the MSE, we see that the seemingly high performing *rlasso* implementation performs much worse in terms of MSE than the high correlation would suggest. It gets the sorting right, but not the levels as a look at the axes indicates.
+Interestingly when checking the MSE, we see that the seemingly high performing `rlasso` implementation performs much worse in terms of MSE than the high correlation would suggest. It gets the sorting right, but not the levels as a look at the axes indicates.
 
 ```{r}
 # Compare MSE
@@ -232,7 +236,7 @@ data.frame(MSE = colMeans( (results1k[,-1]-c(tau))^2 ) ,
 
 A computationally more expensive, but agnostic approach is to create an ensemble or SuperLearner. The idea is that we form predictions via several different supervised ML methods and use a weighted average of their predictions as final prediction. These weights are chosen in a data-driven way via cross-validation to figure out which predictors work best for the prediction model at hand (see [Naimi and Balzer (2018)](https://link.springer.com/article/10.1007/s10654-018-0390-z) for a nice introduction with examples in R).
 
-I am not aware of such an implementation for the R-learner. However, the *dr_learner* allows to use such an ensemble of methods. We specify it to use ensembles of several methods.
+I am not aware of such an implementation for the R-learner. However, the `dr_learner` allows to use such an ensemble of methods. We specify it to use ensembles of several methods.
 
 As the treatment is binary, we include the following methods to estimate the propensity score:
 
@@ -439,10 +443,9 @@ data.frame(MSE = colMeans( (results16k[,-1]-c(tau))^2 ) ,
            Method = factor(label_method,levels=label_method) ) %>%
   ggplot(aes(x=Method,y=MSE)) + geom_point(size = 2) + 
   ggtitle(paste(toString(n),"observations")) + geom_hline(yintercept = 0)
-# save.image("D:/Switch/Teaching/GESIS Spring Seminar/Day 3/Meta_learner.RData")
 ```
 
-With increasing sample size, the DR-learner with ensemble methods catches up with the methods that are tailored for the specific DGP. *rlasso* and the purely Random Forest based DR-learner continuously improve but are not competitive.
+With increasing sample size, the DR-learner with ensemble methods catches up with the methods tailored for the specific DGP. `rlasso` and the purely Random Forest based DR-learner continuously improve but are not competitive.
 
 This highlights that using ensemble learners as an agnostic way to manage the prediction tasks in meta-learners works quite well. Especially in practice this can be a big advantage because it is *a priori* not clear which methods best approximate the nuisance parameters and heterogeneity. The big downside is of course that it takes much much longer to compute.
 

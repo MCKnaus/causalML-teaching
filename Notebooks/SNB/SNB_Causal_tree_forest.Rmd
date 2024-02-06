@@ -39,17 +39,18 @@ Consider the following experimental DGP with discrete heterogeneous treatment ef
 - The potential outcome model of the treated is $Y(1) = m_0(X) + \tau(X) + \varepsilon$, with $\varepsilon \sim N(0,1/2)$
 
 ```{r, warning = F, message = F}
-# Load packages
-library(grf)
-library(tidyverse)
-library(rpart)
-library(rpart.plot)
-library(partykit)
-library(patchwork)
-library(causalTree)
-library(gganimate)
+if (!require("grf")) install.packages("grf", dependencies = TRUE); library(grf)
+if (!require("tidyverse")) install.packages("tidyverse", dependencies = TRUE); library(tidyverse)
+if (!require("patchwork")) install.packages("patchwork", dependencies = TRUE); library(patchwork)
+if (!require("rpart")) install.packages("rpart", dependencies = TRUE); library(rpart)
+if (!require("rpart.plot")) install.packages("rpart.plot", dependencies = TRUE); library(rpart.plot)
+if (!require("partykit")) install.packages("partykit", dependencies = TRUE); library(partykit)
+if (!require("causalTree")) {
+  if (!require("devtools")) install.packages("devtools", dependencies = TRUE); library(devtools)
+  install_github("susanathey/causalTree")
+}; library(causalTree)
 
-set.seed(1234)
+set.seed(12345) # Admittedly a bit seed-hacked in favor of clean illustration
 
 # Set parameters
 n = 1000
@@ -274,12 +275,13 @@ data.frame(Method = factor(c("Tree","Causal Tree","Forest","Causal Forest"),
            mses) %>%
   pivot_longer(cols=-Method,names_to = "Target",values_to = "MSE") %>%
   ggplot(aes(x=Method,y=MSE)) + geom_point() + facet_wrap(~Target) + 
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  geom_hline(yintercept = 0)
 ```
 
 As expected the Causal Forest provides the lowest MSE for the approximation of the CATE.
 
-Interestingly it also approximates the control outcome better than the separate forest. This might be verified in a bigger simulation study, but not in this notebook.
+Interestingly it also approximates the control outcome better than the separate forest. This might be further investigated in a bigger simulation study, but not in this notebook.
 
 <br>
 <br>
@@ -303,7 +305,6 @@ To get a better understanding what Causal Forests are doing, consider the follow
 
 ```{r}
 # Set parameters
-n = 200
 p = 2
 # Draw sample
 x = matrix(runif(n*p,-pi,pi),ncol=p)
@@ -326,7 +327,7 @@ g1 / g2 / g3
 
 Recall that the Causal Forest can be written as a residual-on-residual regression with $x$-specific weights $\alpha(x)$:
 
-$$\hat{\tau}^{cf}(x) = argmin_{\tau} \left\{ \sum_{i=1}^N \alpha_i(x) \left[(Y_i - \hat{m}(X_i))  - \tau(x) (W_i - \hat{e}(X_i)) \right]^2 \right\}$$
+$$\hat{\tau}^{cf}(x) = argmin_{\breve{\tau}} \left\{ \sum_{i=1}^N \alpha_i(x) \left[(Y_i - \hat{m}(X_i))  - \breve{\tau} (W_i - \hat{e}(X_i)) \right]^2 \right\}$$
 
 The weights can be accessed using the `get_forest_weights` function on a `causal_forest` object.
 
@@ -342,7 +343,7 @@ testx = matrix(c(-3,rep(0,p-1)),nrow=1)
 # Check what package predicts
 predict(cf,newdata = testx)$predictions
 ```
-which is reasonably close to the true value of zero.
+which is reasonably close to the true value of zero given the small number of observations.
 
 Alternatively we can handcode it as a weighted residual-on-residual regression after extracting the underlying weights.
 
@@ -355,9 +356,9 @@ alphax = get_forest_weights(cf,newdata = testx)[1,]
 coef(lm(res_y ~ res_w,weights = alphax))
 ```
 
-The second coefficient is identical to the estimated CATE.
+The second coefficient (the slope coefficient) is identical to the estimated CATE.
 
-*Remark:* Note that the intercept is not necessary as we know (and see) that it should be zero. However, the `grf` package includes it. The differences to the case without constant are negligible:
+*Remark:* Note that the intercept is not necessary as we know (and see) that it should be zero. However, the `grf` package includes it and to numerically match the grf output, we apply it as well. However, note that the differences to the case without constant are negligible:
 
 ```{r}
 # Replicate handcoded w/o constant
@@ -373,7 +374,7 @@ Finally, this setting can be used to nicely illustrate what happens at different
 
 ```{r}
 # Run same over grid an see how weights move
-grid = seq(-3,0,0.5)
+grid = seq(-3,0,1)
 gridx = cbind(grid,matrix(0,length(grid),p-1))
 grid_hat = predict(cf,newdata = gridx)$predictions
 alpha = get_forest_weights(cf,newdata = gridx)
@@ -395,9 +396,9 @@ for (i in 1:length(grid)) {
 }
 ```
 
-The jump from -2 to -1.5 is most instructive. We see that before the jump of the true CATE function units with low values of $X_1$ receive most weight. Furthermore, controls (with negative treatment residuals) and treated (with positive treatment residuals) of those with large weights are quite similar, resulting in a nearly straight line being fitted.
+The jump from $X = -2$ to $X=-1$ is most instructive. We see that before the jump of the true CATE function units with low values of $X_1$ receive most weight. Furthermore, controls (with negative treatment residuals) and treated (with positive treatment residuals) of those with large weights are quite similar.  This results in a nearly horizontal slope and thus a CATE estimate of close to zero.
 
-After the jump, units with larger values of $X_1$ receive most of the weight, resulting in a clearly positive slope.
+After the jump, units with larger values of $X_1$ receive most of the weight, resulting in a clearly positive slope. As the slope of the line is the estimated CATE, we (rightly) estimate a substantial positive effect after the jump.
 
 <br>
 

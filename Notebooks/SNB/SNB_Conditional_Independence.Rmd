@@ -68,10 +68,10 @@ For compactness, we focus on the mixed case here. We have three random variables
 $$ Y \perp\!\!\!\!\perp W \mid X \iff f_{Y,W \mid X}(y, w \mid x) = f_{Y \mid X}(y \mid x) \cdot P(W = w \mid X = x)
 $$
 
-This also implies:
+This also implies for all $w$ with $P(W = w \mid X = x)$ that
 
 $$f_{Y\mid W, X}(y \mid w,x) = \frac{f_{Y,W \mid X}(y,w \mid x)}{P(W = w \mid X = x)} = \frac{ f_{Y \mid X}(y \mid x) \cdot P(W = w \mid X = x)}{P(W = w \mid X = x)} = f_{Y \mid X} (y \mid x)$$
-i.e., the conditioning on $W$ doesn't matter once we condition on $X$. As the (unconditional) independence above, this works for the cases of only continuous, only discrete variables or any combination of them. Keep in mind however, the distinction between densities and probabilities.
+i.e., the conditioning on $W$ doesn't matter once we condition on $X$. As the (unconditional) independence above, this works similarly for the cases of only continuous and only discrete variables using only densities or probabilities, respectively.
 
 <br>
 
