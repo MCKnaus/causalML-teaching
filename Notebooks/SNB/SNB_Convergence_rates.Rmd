@@ -313,7 +313,7 @@ mrmse = round(colMeans(results),3)
 mrmse
 ```
 
-and realize that they indeed nearly perfectly halve:
+and realize that they are indeed nearly perfectly halved:
 
 ```{r}
 round(mrmse/lag(mrmse),3)
