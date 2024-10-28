@@ -5,8 +5,6 @@ This repository consolidates the teaching material of several "Causal Machine Le
 
 ## Comments
 
-**!!! Workshop for Ukraine April 11th: Do you like the material and my style of teaching? Please join my short course "Introduction to Causal Machine Learning estiamtors in R" or fund students who want to join [here](https://sites.google.com/view/dariia-mykhailyshyna/main/r-workshops-for-ukraine#h.ip9rapd58cpz) !!!**
-
 Like the whole literature the content is a moving target. Please let me know if you spot any errors, disagreements, but also if you found the material useful. To this end, [open an issue](https://github.com/MCKnaus/causalML-teaching/issues) or [write me a mail](mailto:michael.knaus@uni-tuebingen.de)
 
 The slides include links to a variety of compiled html **R notebooks**. Their Rmd files are provided in [this repository](https://github.com/MCKnaus/causalML-teaching/tree/main/Notebooks) if you are interested in running and extending them yourself. A full list of available notebooks is provided on [my homepage](https://mcknaus.github.io/menu/teaching.html).
