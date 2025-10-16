@@ -1,8 +1,7 @@
-![Visitors](https://visitor-badge.laobi.icu/badge?page_id=MCKnaus.causalML-teaching)
-  <!--- Started 16.10.2025 -->
-
 # Teaching material for Causal ML
 This repository consolidates the teaching material of several "Causal Machine Learning" courses I taught on the master and PhD level with a focus on impact/policy/program evaluation.
+
+**Last update: October 2025**
 
 ## Comments
 
@@ -24,3 +23,6 @@ The slides include links to a variety of compiled html **R notebooks**. Their Rm
 9. [**Policy learning**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML9_PL.pdf)
 10. [**Multi-armed bandits**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML10_Bandits.pdf)
 
+
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=MCKnaus.causalML-teaching)
+  <!--- Started 16.10.2025 -->
