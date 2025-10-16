@@ -1,8 +1,4 @@
-[![Visits](https://img.shields.io/badge/dynamic/json
-?url=https%3A%2F%2Fapi.countapi.xyz%2Fhit%2Fmcknaus.causalml-teaching%2Fvisits
-&query=value
-&label=Visits
-&cacheSeconds=300)](https://countapi.xyz/)
+[![Visits](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.countapi.xyz%2Fhit%2Fmcknaus.causalML-teaching%2Fvisits&query=value&label=Visits&cacheSeconds=3600)](https://countapi.xyz/)
   <!--- Started 16.10.2025 -->
 
 # Teaching material for Causal ML
