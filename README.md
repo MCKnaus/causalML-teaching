@@ -1,4 +1,4 @@
-[![HitCount](https://hits.dwyl.com/MCKnaus/causalML-teaching.svg?style=flat)](http://hits.dwyl.com/MCKnaus/causalML-teaching) <!--- Started 3.8.2023 -->
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https://github.com/MCKnaus/causalML-teaching&title=visits)](https://hits.seeyoufarm.com)  <!--- Started 16.10.2025 -->
 
 # Teaching material for Causal ML
 This repository consolidates the teaching material of several "Causal Machine Learning" courses I taught on the master and PhD level with a focus on impact/policy/program evaluation.
