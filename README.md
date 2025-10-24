@@ -24,5 +24,5 @@ The slides include links to a variety of compiled html **R notebooks**. Their Rm
 10. [**Multi-armed bandits**](https://nbviewer.org/github/MCKnaus/causalML-teaching/blob/main/Slides/CML10_Bandits.pdf)
 
 
-![Visitors](https://visitor-badge.laobi.icu/badge?page_id=MCKnaus.causalML-teaching)
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=MCKnaus.causalML-teaching) since Oct 2025
   <!--- Started 16.10.2025 -->
